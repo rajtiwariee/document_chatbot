@@ -11,7 +11,7 @@ class UserCreate(BaseModel):
     email: EmailStr
     password: str
     full_name: str | None = None
-    organization_name: str | None = None  # Creates new tenant if provided
+    organization_name: str | None = "mahindra_org"  # Creates new tenant if provided
 
 
 class UserLogin(BaseModel):
