@@ -3,17 +3,20 @@ fastapi>=0.109.0
 uvicorn>=0.27.0
 sqlalchemy>=2.0.25
 asyncpg>=0.29.0
+psycopg2-binary>=2.9.9
 pydantic>=2.5.3
 pydantic-settings>=2.1.0
 python-multipart>=0.0.6
 
 # Authentication
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+passlib>=1.7.4
+argon2-cffi>=23.1.0
 
 # AI/ML
 langchain>=0.1.0
 langchain-google-genai>=1.0.0
+langchain-text-splitters>=0.0.1
 langgraph>=0.0.20
 qdrant-client>=1.7.0
 
