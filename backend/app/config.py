@@ -32,9 +32,11 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3"
     embedding_model: str = "text-embedding-004"
     
-    # File Upload
+    # File Upload & Storage
     upload_dir: str = "./uploads"
     max_file_size_mb: int = 100
+    storage_backend: str = "local"    # "local" or "gcs"
+    gcs_bucket_name: str = ""
     
     class Config:
         env_file = ".env"

@@ -108,13 +108,40 @@ def process_document(self, document_id: str):
     update_document_status(document_id, DocumentStatus.PROCESSING)
 
     try:
-        # ── Step 1: Extract text ─────────────────────────────────────
+        # ── Step 1: Read file from storage backend ───────────────────
+        logger.info(f"[{document_id}] Reading file from storage...")
+
+        import tempfile
+        import os
+        from uuid import UUID
+        from app.middleware.file_storage import get_storage
+
+        storage = get_storage()
+        tenant_uuid = UUID(doc["tenant_id"])
+
+        # For local storage, file_path is already a local path
+        # For GCS, we download to a temp file
+        if settings.storage_backend == "gcs":
+            file_content = storage.read(tenant_uuid, doc["file_path"])
+            _, ext = os.path.splitext(doc["filename"])
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext)
+            tmp.write(file_content)
+            tmp.close()
+            local_path = tmp.name
+        else:
+            local_path = doc["file_path"]
+
+        # ── Step 2: Extract text ─────────────────────────────────────
         logger.info(f"[{document_id}] Extracting text from {doc['filename']}")
 
         from app.document_processing.extractor import DocumentExtractor
 
         extractor = DocumentExtractor()
-        extracted = extractor.extract(doc["file_path"], doc["file_type"])
+        extracted = extractor.extract(local_path, doc["file_type"])
+
+        # Clean up temp file if we created one
+        if settings.storage_backend == "gcs":
+            os.unlink(local_path)
 
         if extracted.error:
             raise RuntimeError(f"Extraction failed: {extracted.error}")

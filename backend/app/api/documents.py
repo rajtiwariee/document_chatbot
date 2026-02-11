@@ -2,7 +2,6 @@
 Document management API endpoints.
 Fully tenant-isolated: all queries and file operations are scoped to the user's tenant.
 """
-import os
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
@@ -14,8 +13,7 @@ from app.database import get_db
 from app.models.user import User
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.api.auth import get_current_user
-from app.middleware.tenant import get_tenant_id, require_same_tenant
-from app.middleware.file_storage import generate_storage_path, validate_file_access
+from app.middleware.file_storage import get_storage
 
 settings = get_settings()
 
@@ -32,7 +30,7 @@ MIME_TYPE_MAP = {
     "image/tiff": DocumentType.IMAGE,
 }
 
-MAX_FILE_SIZE = settings.max_file_size_mb * 1024 * 1024  # Convert MB to bytes
+MAX_FILE_SIZE = settings.max_file_size_mb * 1024 * 1024
 
 
 @router.get("/")
@@ -58,7 +56,7 @@ async def upload_document(
 ):
     """
     Upload a new document.
-    Files are stored in a tenant-isolated directory.
+    Files are stored via the configured storage backend (local or GCS).
     Processing is queued as a background Celery task.
     """
     # 1. Validate file type
@@ -79,21 +77,20 @@ async def upload_document(
             detail=f"File exceeds {settings.max_file_size_mb}MB limit",
         )
 
-    # 3. Generate tenant-isolated storage path
-    stored_filename, full_path = generate_storage_path(
+    # 3. Save file via storage backend (local disk or GCS)
+    storage = get_storage()
+    original_name = file.filename or "unnamed_file"
+    stored_path = storage.save(
         tenant_id=current_user.tenant_id,
-        original_filename=file.filename or "unnamed_file",
+        filename=original_name,
+        content=content,
     )
 
-    # 4. Write file to disk
-    with open(full_path, "wb") as f:
-        f.write(content)
-
-    # 5. Create database record
+    # 4. Create database record
     document = Document(
-        filename=stored_filename,
-        original_filename=file.filename or "unnamed_file",
-        file_path=full_path,
+        filename=original_name,
+        original_filename=original_name,
+        file_path=stored_path,
         file_size=len(content),
         mime_type=content_type,
         document_type=doc_type,
@@ -105,14 +102,12 @@ async def upload_document(
     await db.flush()
     await db.refresh(document)
 
-    # 6. Queue background processing task
+    # 5. Queue background processing task
     try:
         from app.worker import process_document
 
         process_document.delay(str(document.id))
     except Exception:
-        # If Celery is unavailable, document stays in PENDING status
-        # Users can trigger reprocessing later
         pass
 
     return {
@@ -172,11 +167,11 @@ async def delete_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    # Delete the file from disk (tenant-isolated path)
-    if document.file_path and os.path.exists(document.file_path):
-        # Double-check the file belongs to this tenant's directory
-        if validate_file_access(current_user.tenant_id, document.file_path):
-            os.remove(document.file_path)
+    # Delete the file from storage backend
+    if document.file_path:
+        storage = get_storage()
+        storage.delete(current_user.tenant_id, document.file_path)
 
     await db.delete(document)
     return None
+
