@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import init_db
+from app.logging_config import setup_logging
 from app.api import auth, documents, chat
 from app.websockets import manager, authenticate_websocket
 
@@ -19,6 +20,7 @@ settings = get_settings()
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
+    setup_logging()
     await init_db()
     yield
     # Shutdown

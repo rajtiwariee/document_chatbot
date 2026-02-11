@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     # Application
     app_name: str = "Document Chatbot"
     debug: bool = False
+    log_dir: str = "./logs"
     
     # Database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/chatbot"
