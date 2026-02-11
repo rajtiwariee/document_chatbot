@@ -20,7 +20,7 @@ from app.schemas.user import UserCreate, UserResponse, Token, TokenData
 router = APIRouter()
 settings = get_settings()
 
-# Password hashing - using argon2 (more secure and compatible)
+# Password hashing - using argon2
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
 # OAuth2 scheme

@@ -8,11 +8,22 @@ from app.config import get_settings
 
 settings = get_settings()
 
-# Create async engine
+# Create async engine with connection pooling
 engine = create_async_engine(
     settings.database_url,
     echo=settings.debug,
-    future=True
+    future=True,
+    pool_size=10,
+    max_overflow=5,
+    pool_timeout=30,
+    pool_recycle=1800,
+    pool_pre_ping=True,
+    connect_args={
+        "server_settings": {
+            "statement_timeout": "30000",
+            "idle_in_transaction_session_timeout": "60000",
+        }
+    },
 )
 
 # Session factory
