@@ -2,7 +2,7 @@ import { Avatar } from "../ui/Avatar";
 import { cn } from "../../lib/utils";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { User, Sparkles, Bot } from "lucide-react";
+import { User, Bot } from "lucide-react";
 
 interface MessageItemProps {
   role: 'user' | 'assistant';
