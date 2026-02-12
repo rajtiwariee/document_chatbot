@@ -28,3 +28,13 @@ export interface ConversationSummary {
   updated_at: string;
   message_count: number;
 }
+
+export interface Document {
+  id: string;
+  filename: string;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  file_size: number;
+  document_type: string;
+  created_at: string;
+  error_message?: string;
+}
