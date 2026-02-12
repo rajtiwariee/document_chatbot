@@ -122,7 +122,7 @@ async def chat(
 
     # Run the agent
     agent = create_agent_graph(tenant_id)
-    result = agent.invoke({
+    result = await agent.ainvoke({
         "messages": all_messages,
         "tenant_id": tenant_id,
         "user_id": user_id,
@@ -130,7 +130,7 @@ async def chat(
 
     # Extract the final response
     final_message = result["messages"][-1]
-    response_text = final_message.content
+    response_text = _get_text_content(final_message.content)
 
     # Extract sources from tool calls in the message history
     sources = _extract_sources(result["messages"])
@@ -218,7 +218,7 @@ async def chat_stream(
         sources = []
 
         # Stream the agent execution
-        for event in agent.stream(
+        async for event in agent.astream(
             {
                 "messages": all_messages,
                 "tenant_id": tenant_id,
@@ -229,13 +229,15 @@ async def chat_stream(
             messages = event.get("messages", [])
             if messages:
                 last = messages[-1]
-                if hasattr(last, "content") and isinstance(last.content, str):
+                if hasattr(last, "content") and last.content:
                     if not hasattr(last, "tool_calls") or not last.tool_calls:
                         # This is a final text response
-                        full_response = last.content
-                        sources = _extract_sources(messages)
+                        text = _get_text_content(last.content)
+                        if text:
+                            full_response = text
+                            sources = _extract_sources(messages)
 
-                        yield f"data: {json.dumps({'type': 'chunk', 'content': last.content})}\n\n"
+                            yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
 
         # Send final event with sources and conversation_id
         yield f"data: {json.dumps({'type': 'done', 'conversation_id': str(conversation.id), 'sources': sources})}\n\n"
@@ -355,6 +357,26 @@ async def delete_conversation(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _get_text_content(content) -> str:
+    """
+    Normalize LLM message content to a plain string.
+
+    Some providers (e.g. Gemini) return content as a list of blocks
+    like [{'type': 'text', 'text': '...'}] instead of a plain string.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(parts)
+    return str(content)
+
+
 def _extract_sources(messages) -> list[dict]:
     """
     Extract source citations from tool call results in the message history.

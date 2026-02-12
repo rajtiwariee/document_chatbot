@@ -52,7 +52,7 @@ def _should_continue(state: AgentState) -> str:
     return END
 
 
-def _call_model(state: AgentState) -> dict:
+async def _call_model(state: AgentState) -> dict:
     """
     Call the LLM with the current conversation + system prompt.
 
@@ -75,7 +75,7 @@ def _call_model(state: AgentState) -> dict:
     # Prepend system message
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
 
-    response = llm_with_tools.invoke(messages)
+    response = await llm_with_tools.ainvoke(messages)
 
     return {"messages": [response]}
 

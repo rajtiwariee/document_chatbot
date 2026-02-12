@@ -43,9 +43,8 @@ class TenantVectorStore:
     to a specific tenant's collection to prevent data leakage.
     """
 
-    VECTOR_SIZE = 768  # Google text-embedding-004 dimensions
-
     def __init__(self):
+        self.vector_size = settings.embedding_dimensions
         self.client = QdrantClient(
             host=settings.qdrant_host,
             port=settings.qdrant_port,
@@ -71,7 +70,7 @@ class TenantVectorStore:
                 self.client.create_collection(
                     collection_name=collection_name,
                     vectors_config=VectorParams(
-                        size=self.VECTOR_SIZE,
+                        size=self.vector_size,
                         distance=Distance.COSINE,
                     ),
                 )
@@ -168,9 +167,9 @@ class TenantVectorStore:
                 ]
             )
 
-        results = self.client.search(
+        response = self.client.query_points(
             collection_name=collection_name,
-            query_vector=query_embedding,
+            query=query_embedding,
             query_filter=query_filter,
             limit=top_k,
         )
@@ -187,7 +186,7 @@ class TenantVectorStore:
                     "chunk_index": hit.payload.get("chunk_index", 0),
                 },
             )
-            for hit in results
+            for hit in response.points
         ]
 
     def delete_document_vectors(self, tenant_id: str, document_id: str) -> None:

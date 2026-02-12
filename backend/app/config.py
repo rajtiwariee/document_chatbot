@@ -31,8 +31,9 @@ class Settings(BaseSettings):
     # Google Gemini
     google_api_key: str = os.getenv("GOOGLE_API_KEY")
     gemini_model: str = "gemini-3-flash-preview"
-    embedding_model: str = "text-embedding-004"
-    
+    embedding_model: str = "gemini-embedding-001"
+    embedding_dimensions: int = 3072  # gemini-embedding-001
+
     # File Upload & Storage
     upload_dir: str = "./uploads"
     max_file_size_mb: int = 100

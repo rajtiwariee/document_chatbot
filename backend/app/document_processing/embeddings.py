@@ -1,5 +1,5 @@
 """
-Embedding generation using Google Gemini's text-embedding-004 model.
+Embedding generation using Google Gemini embedding models.
 
 Generates vector embeddings for document chunks to enable semantic search.
 """
@@ -17,16 +17,18 @@ logger = logging.getLogger(__name__)
 
 class EmbeddingGenerator:
     """
-    Generate embeddings for text chunks using Google's text-embedding-004.
+    Generate embeddings for text chunks using the configured embedding model.
 
-    The embedding model produces 768-dimensional vectors.
+    Vector dimensions are configured via settings.embedding_dimensions.
     """
 
-    DIMENSIONS = 768  # text-embedding-004 output size
-
     def __init__(self, api_key: Optional[str] = None):
+        model_name = settings.embedding_model
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+            
         self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=f"models/{settings.embedding_model}",
+            model=model_name,
             google_api_key=api_key or settings.google_api_key,
         )
 
