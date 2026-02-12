@@ -101,8 +101,13 @@ def process_document(self, document_id: str):
     # ── Step 0: Fetch document metadata ──────────────────────────────
     doc = get_document(document_id)
     if not doc:
-        logger.error(f"Document not found: {document_id}")
-        return {"status": "error", "message": "Document not found"}
+        logger.warning(
+            f"Document not found: {document_id} (attempt {self.request.retries + 1})"
+        )
+        raise self.retry(
+            exc=ValueError(f"Document not found: {document_id}"),
+            countdown=2 ** (self.request.retries + 1),  # 2s, 4s, 8s
+        )
 
     # Update status to processing
     update_document_status(document_id, DocumentStatus.PROCESSING)

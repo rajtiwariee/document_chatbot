@@ -28,6 +28,7 @@ MIME_TYPE_MAP = {
     "image/png": DocumentType.IMAGE,
     "image/jpeg": DocumentType.IMAGE,
     "image/tiff": DocumentType.IMAGE,
+    "text/plain": DocumentType.OTHER,
 }
 
 MAX_FILE_SIZE = settings.max_file_size_mb * 1024 * 1024
@@ -102,13 +103,21 @@ async def upload_document(
     await db.flush()
     await db.refresh(document)
 
+    # Commit so the row is visible to the Celery worker's separate DB session
+    await db.commit()
+
     # 5. Queue background processing task
     try:
+        from app.celery_app import celery_app  # noqa: F401 — ensures Redis broker is initialized
         from app.worker import process_document
 
         process_document.delay(str(document.id))
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.error(f"Failed to queue document processing task: {e}")
+        # We don't raise here to allow the upload to succeed, but we log it.
+        # Ideally, we might want to set status to FAILED or similar.
 
     return {
         "id": str(document.id),

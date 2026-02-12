@@ -7,7 +7,8 @@ settings = get_settings()
 celery_app = Celery(
     "worker",
     broker=settings.redis_url,
-    backend=settings.redis_url
+    backend=settings.redis_url,
+    include=["app.worker"]
 )
 
 celery_app.conf.update(
@@ -19,7 +20,6 @@ celery_app.conf.update(
     task_track_started=True,
 )
 
-# Placeholder for task routes
-celery_app.conf.task_routes = {
-    "app.worker.process_document": "documents-queue",
-}
+# Setup logging
+from app.logging_config import setup_logging
+setup_logging()

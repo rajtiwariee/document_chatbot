@@ -49,7 +49,7 @@ class DocumentExtractor:
         result = extractor.extract("/path/to/doc.pdf", "pdf")
     """
 
-    SUPPORTED_TYPES = {"pdf", "docx", "pptx", "xlsx", "image"}
+    SUPPORTED_TYPES = {"pdf", "docx", "pptx", "xlsx", "image", "other"}
 
     def extract(self, file_path: str, file_type: str) -> ExtractedDocument:
         """
@@ -57,7 +57,7 @@ class DocumentExtractor:
 
         Args:
             file_path: Absolute path to the file
-            file_type: One of: pdf, docx, pptx, xlsx, image
+            file_type: One of: pdf, docx, pptx, xlsx, image, other
 
         Returns:
             ExtractedDocument with extracted text and metadata
@@ -71,6 +71,8 @@ class DocumentExtractor:
             )
 
         if file_type not in self.SUPPORTED_TYPES:
+            # Fallback: if it's "other" but not in supported (shouldn't happen if we add it)
+            # or if it's some unknown type, we might try to read as text if it's "other"
             return ExtractedDocument(
                 filename=path.name,
                 file_type=file_type,
@@ -123,6 +125,30 @@ class DocumentExtractor:
         elements = partition_image(str(path), strategy="ocr_only")
         return self._elements_to_document(path, "image", elements)
 
+    def _extract_other(self, path: Path) -> ExtractedDocument:
+        """Extract text from plain text files."""
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            # Try latin-1 fallback
+            text = path.read_text(encoding="latin-1")
+            
+        # Treat entire file as page 1
+        page = ExtractedPage(
+            page_number=1,
+            text=text,
+            metadata={"source_file": path.name}
+        )
+        
+        doc = ExtractedDocument(
+            filename=path.name,
+            file_type="other",
+            pages=[page],
+            total_text=text,
+            metadata={"source_path": str(path), "page_count": 1}
+        )
+        return doc
+    
     def _elements_to_document(
         self, path: Path, file_type: str, elements: list
     ) -> ExtractedDocument:

@@ -3,7 +3,7 @@ Application configuration using Pydantic Settings.
 """
 from functools import lru_cache
 from pydantic_settings import BaseSettings
-
+import os
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 30
     
     # Google Gemini
-    google_api_key: str = ""
-    gemini_model: str = "gemini-3"
+    google_api_key: str = os.getenv("GOOGLE_API_KEY")
+    gemini_model: str = "gemini-3-flash-preview"
     embedding_model: str = "text-embedding-004"
     
     # File Upload & Storage
@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     gcs_bucket_name: str = ""
     
     class Config:
-        env_file = ".env"
+        env_file = [".env", "../.env"]
         env_file_encoding = "utf-8"
 
 
