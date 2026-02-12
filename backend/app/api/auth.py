@@ -1,6 +1,7 @@
 """
 Authentication API endpoints.
 """
+import logging
 from datetime import datetime, timedelta
 from uuid import UUID
 
@@ -15,7 +16,9 @@ from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.tenant import Tenant
-from app.schemas.user import UserCreate, UserResponse, Token, TokenData
+from app.schemas.user import UserCreate, UserResponse, Token, TokenData, LoginResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 settings = get_settings()
@@ -107,11 +110,12 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     db.add(user)
     await db.flush()
     await db.refresh(user)
-    
+
+    logger.info("New user registered: %s", user.email)
     return user
 
 
-@router.post("/login", response_model=Token)
+@router.post("/login", response_model=LoginResponse)
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: AsyncSession = Depends(get_db)
@@ -119,20 +123,25 @@ async def login(
     """Login and get access token."""
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalar_one_or_none()
-    
+
     if not user or not verify_password(form_data.password, user.hashed_password):
+        logger.warning("Failed login attempt for %s", form_data.username)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     access_token = create_access_token(
         data={"sub": str(user.id), "tenant_id": str(user.tenant_id)},
         expires_delta=timedelta(minutes=settings.access_token_expire_minutes)
     )
-    
-    return Token(access_token=access_token)
+
+    logger.info("User %s logged in", user.email)
+    return LoginResponse(
+        access_token=access_token,
+        user=UserResponse.model_validate(user),
+    )
 
 
 @router.get("/me", response_model=UserResponse)

@@ -100,8 +100,10 @@ def setup_logging() -> None:
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
 
-    # Clear any existing handlers
+    # Clear any existing handlers (root + uvicorn loggers)
     root_logger.handlers.clear()
+    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(_name).handlers.clear()
 
     # --- Console handler ---
     console_handler = logging.StreamHandler(sys.stdout)
@@ -137,10 +139,8 @@ def setup_logging() -> None:
     root_logger.addHandler(error_handler)
 
     # --- Quiet noisy third-party loggers ---
-    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
-    logging.getLogger("sqlalchemy.engine").setLevel(
-        logging.INFO if settings.debug else logging.WARNING
-    )
+    logging.getLogger("uvicorn.access").setLevel(logging.INFO)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
     logging.getLogger("celery").setLevel(logging.INFO)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

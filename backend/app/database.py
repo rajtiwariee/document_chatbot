@@ -11,7 +11,7 @@ settings = get_settings()
 # Create async engine with connection pooling
 engine = create_async_engine(
     settings.database_url,
-    echo=settings.debug,
+    echo=False,
     future=True,
     pool_size=10,
     max_overflow=5,
