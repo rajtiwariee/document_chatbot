@@ -185,7 +185,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               className="hidden" 
               ref={fileInputRef} 
               onChange={handleFileSelect}
-              accept=".pdf,.docx,.txt,.md"
+              accept=".pdf,.docx,.txt,.md,.pptx,.ppt"
             />
           </div>
 

@@ -24,6 +24,7 @@ MIME_TYPE_MAP = {
     "application/pdf": DocumentType.PDF,
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": DocumentType.DOCX,
     "application/vnd.openxmlformats-officedocument.presentationml.presentation": DocumentType.PPTX,
+    "application/vnd.ms-powerpoint": DocumentType.PPTX,
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": DocumentType.XLSX,
     "image/png": DocumentType.IMAGE,
     "image/jpeg": DocumentType.IMAGE,
