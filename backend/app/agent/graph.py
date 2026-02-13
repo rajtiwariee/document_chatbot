@@ -77,7 +77,7 @@ async def _decompose_query(state: AgentState) -> dict:
     try:
         client = genai.Client(api_key=settings.google_api_key)
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=f"""Analyze this query and determine if it requires multiple distinct steps to answer.
 
 Query: "{query}"
@@ -178,7 +178,7 @@ async def _reflect_on_answer(state: AgentState) -> dict:
     try:
         client = genai.Client(api_key=settings.google_api_key)
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=f"""Evaluate if this answer adequately addresses the user's question.
 
 User question: "{user_query}"

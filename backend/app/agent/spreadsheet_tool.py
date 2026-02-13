@@ -120,7 +120,7 @@ def execute_query(df: pd.DataFrame, question: str) -> str:
     try:
         client = genai.Client(api_key=settings.google_api_key)
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=CODE_GEN_PROMPT.format(schema=schema, question=question),
             config=types.GenerateContentConfig(
                 temperature=0,
