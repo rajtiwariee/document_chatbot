@@ -16,6 +16,7 @@ from qdrant_client.models import (
     Filter,
     FieldCondition,
     MatchValue,
+    PayloadSchemaType,
 )
 
 from app.config import get_settings
@@ -75,10 +76,28 @@ class TenantVectorStore:
                     ),
                 )
                 logger.info(f"Created Qdrant collection: {collection_name}")
+
+            self._ensure_payload_indexes(collection_name)
             return collection_name
         except Exception as e:
             logger.error(f"Error creating collection {collection_name}: {e}")
             raise
+
+    def _ensure_payload_indexes(self, collection_name: str) -> None:
+        """Ensure payload indexes exist for efficient filtered search."""
+        try:
+            collection_info = self.client.get_collection(collection_name)
+            existing_indexes = set(collection_info.payload_schema.keys()) if collection_info.payload_schema else set()
+
+            if "document_id" not in existing_indexes:
+                self.client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="document_id",
+                    field_schema=PayloadSchemaType.KEYWORD,
+                )
+                logger.info(f"Created payload index on 'document_id' for {collection_name}")
+        except Exception as e:
+            logger.warning(f"Failed to ensure payload indexes for {collection_name}: {e}")
 
     def add_chunks(
         self,

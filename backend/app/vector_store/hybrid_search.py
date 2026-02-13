@@ -6,22 +6,41 @@ semantic and keyword queries (e.g. part numbers like "BRK-45821").
 """
 import logging
 import re
+import time
 from collections import defaultdict
 
+import redis
 from rank_bm25 import BM25Okapi
 
+from app.config import get_settings
 from app.document_processing.embeddings import EmbeddingGenerator
 from app.vector_store.store import TenantVectorStore, SearchResult
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 # RRF constant (standard value from the original paper)
 RRF_K = 60
 
 
 def _tokenize(text: str) -> list[str]:
-    """Simple whitespace + punctuation tokenizer for BM25."""
-    return re.findall(r"\w+", text.lower())
+    """Tokenizer that preserves part numbers (e.g., BRK-45821, OIL-FILTER-2024)."""
+    text = text.lower()
+    # Match: hyphenated tokens, dotted tokens, slash tokens, or plain words
+    tokens = re.findall(r"\w+(?:[-./]\w+)*", text)
+    # Also add individual sub-tokens for partial matching
+    expanded = []
+    for token in tokens:
+        expanded.append(token)
+        if "-" in token or "." in token or "/" in token:
+            expanded.extend(re.findall(r"\w+", token))
+    return expanded
+
+
+def _result_key(result: SearchResult) -> str:
+    """Stable dedup key for RRF fusion."""
+    text_prefix = result.chunk_text[:50].strip()
+    return f"{result.document_id}:{result.metadata.get('chunk_index', 0)}:{hash(text_prefix)}"
 
 
 class HybridSearcher:
@@ -29,7 +48,7 @@ class HybridSearcher:
     Combines vector search and BM25 keyword search via Reciprocal Rank Fusion.
 
     BM25 index is built lazily per tenant by scrolling Qdrant payloads.
-    Cache is invalidated after document add/delete.
+    Cache is invalidated cross-process via Redis version counters.
     """
 
     def __init__(
@@ -43,8 +62,14 @@ class HybridSearcher:
         self.vector_weight = vector_weight
         self.bm25_weight = 1.0 - vector_weight
 
-        # Cache: tenant_id -> (BM25Okapi, list of payload dicts)
-        self._bm25_cache: dict[str, tuple[BM25Okapi, list[dict]]] = {}
+        # Cache: tenant_id -> (BM25Okapi, list of payload dicts, cached_at timestamp)
+        self._bm25_cache: dict[str, tuple[BM25Okapi, list[dict], float]] = {}
+        self._cache_versions: dict[str, int] = {}  # local Redis version tracker
+        self._cache_max_size = 50  # Max tenants cached simultaneously
+        self._cache_ttl = 3600  # 1 hour TTL
+
+        # Redis for cross-process cache invalidation
+        self._redis = redis.Redis.from_url(settings.redis_url, decode_responses=True)
 
     def _build_bm25_index(self, tenant_id: str) -> tuple[BM25Okapi, list[dict]]:
         """Build BM25 index by scrolling all points in a tenant's Qdrant collection."""
@@ -90,13 +115,52 @@ class HybridSearcher:
         return bm25, all_payloads
 
     def _get_bm25(self, tenant_id: str) -> tuple[BM25Okapi, list[dict]]:
-        """Get or build BM25 index for a tenant (cached)."""
+        """Get or build BM25 index for a tenant (cached with Redis version check)."""
+        # Check Redis version for cross-process invalidation
+        try:
+            redis_version = int(self._redis.get(f"bm25:version:{tenant_id}") or 0)
+        except Exception:
+            redis_version = 0
+
+        local_version = self._cache_versions.get(tenant_id, -1)
+
+        # Check TTL expiry
+        if tenant_id in self._bm25_cache:
+            _, _, cached_at = self._bm25_cache[tenant_id]
+            if time.time() - cached_at > self._cache_ttl:
+                logger.info(f"BM25 cache TTL expired for tenant {tenant_id}")
+                del self._bm25_cache[tenant_id]
+
+        # Check if stale (Redis version bumped by another process)
+        if local_version < redis_version and tenant_id in self._bm25_cache:
+            logger.info(f"BM25 cache stale for tenant {tenant_id} (local={local_version}, redis={redis_version})")
+            del self._bm25_cache[tenant_id]
+
+        # Evict oldest if over max size
+        if tenant_id not in self._bm25_cache and len(self._bm25_cache) >= self._cache_max_size:
+            oldest = min(self._bm25_cache, key=lambda k: self._bm25_cache[k][2])
+            logger.info(f"Evicting BM25 cache for tenant {oldest} (max size reached)")
+            del self._bm25_cache[oldest]
+
+        # Build if needed
         if tenant_id not in self._bm25_cache:
-            self._bm25_cache[tenant_id] = self._build_bm25_index(tenant_id)
-        return self._bm25_cache[tenant_id]
+            bm25, payloads = self._build_bm25_index(tenant_id)
+            self._bm25_cache[tenant_id] = (bm25, payloads, time.time())
+            self._cache_versions[tenant_id] = redis_version
+
+        bm25, payloads, _ = self._bm25_cache[tenant_id]
+        return bm25, payloads
 
     def invalidate_cache(self, tenant_id: str) -> None:
-        """Invalidate BM25 cache for a tenant (call after document add/delete)."""
+        """Invalidate BM25 cache for a tenant (call after document add/delete).
+
+        Increments Redis version counter so all processes (FastAPI, workers)
+        know their local cache is stale.
+        """
+        try:
+            self._redis.incr(f"bm25:version:{tenant_id}")
+        except Exception as e:
+            logger.warning(f"Failed to increment Redis BM25 version for tenant {tenant_id}: {e}")
         self._bm25_cache.pop(tenant_id, None)
         logger.info(f"Invalidated BM25 cache for tenant {tenant_id}")
 
@@ -138,17 +202,19 @@ class HybridSearcher:
             query_tokens = _tokenize(query)
             scores = bm25.get_scores(query_tokens)
 
-            # Build (index, score) pairs and sort
-            scored = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+            # Pre-filter by document_id and skip zero scores in one pass
+            scored = []
+            for idx, score in enumerate(scores):
+                if score <= 0:
+                    continue
+                if document_id and payloads[idx].get("document_id") != document_id:
+                    continue
+                scored.append((idx, score))
+
+            scored.sort(key=lambda x: x[1], reverse=True)
 
             for idx, score in scored[:fetch_k]:
-                if score <= 0:
-                    break
                 payload = payloads[idx]
-
-                # Filter by document_id if specified
-                if document_id and payload.get("document_id") != document_id:
-                    continue
 
                 bm25_results.append(SearchResult(
                     chunk_text=payload.get("text", ""),
@@ -166,17 +232,16 @@ class HybridSearcher:
                 ))
 
         # --- Reciprocal Rank Fusion ---
-        # Key: chunk_text hash -> (rrf_score, SearchResult)
         rrf_scores: dict[str, float] = defaultdict(float)
         result_map: dict[str, SearchResult] = {}
 
         for rank, result in enumerate(vector_results):
-            key = f"{result.document_id}:{result.metadata.get('chunk_index', 0)}"
+            key = _result_key(result)
             rrf_scores[key] += self.vector_weight * (1.0 / (RRF_K + rank + 1))
             result_map[key] = result
 
         for rank, result in enumerate(bm25_results):
-            key = f"{result.document_id}:{result.metadata.get('chunk_index', 0)}"
+            key = _result_key(result)
             rrf_scores[key] += self.bm25_weight * (1.0 / (RRF_K + rank + 1))
             if key not in result_map:
                 result_map[key] = result
@@ -187,7 +252,6 @@ class HybridSearcher:
         fused_results = []
         for key in sorted_keys[:top_k]:
             result = result_map[key]
-            # Replace score with RRF score for downstream consumers
             fused_results.append(SearchResult(
                 chunk_text=result.chunk_text,
                 document_id=result.document_id,

@@ -65,6 +65,16 @@ def _get_reranker() -> GeminiReranker:
     return _reranker
 
 
+def _should_rerank(results: list) -> bool:
+    """Only rerank when results are ambiguous (close scores)."""
+    if len(results) <= 3:
+        return False
+    # If top result score is much higher than 3rd, ranking is already clear
+    if results[0].score > results[2].score * 1.5:
+        return False
+    return True
+
+
 def _format_search_results(results, include_score: bool = True) -> str:
     """Format search results with citations."""
     if not results:
@@ -131,10 +141,12 @@ def create_search_tool(tenant_id: str):
             top_k=10,
         )
 
-        # Rerank if enabled
-        if settings.enable_reranking and results:
+        # Rerank only when results are ambiguous
+        if settings.enable_reranking and results and _should_rerank(results):
             reranker = _get_reranker()
             results = reranker.rerank(query, results)
+        else:
+            results = results[:5]
 
         return _format_search_results(results)
 
@@ -172,9 +184,11 @@ def create_document_search_tool(tenant_id: str):
             document_id=document_id,
         )
 
-        if settings.enable_reranking and results:
+        if settings.enable_reranking and results and _should_rerank(results):
             reranker = _get_reranker()
             results = reranker.rerank(query, results)
+        else:
+            results = results[:5]
 
         if not results:
             return f"No relevant content found in document {document_id}."
