@@ -123,8 +123,8 @@ def _html_table_to_markdown(html: str) -> str:
     return "\n".join(lines)
 
 
-def _rows_to_markdown(rows: list[list[str]], sheet_name: str | None = None) -> str:
-    """Convert a list of rows to a markdown table with optional sheet name header."""
+def _rows_to_markdown(rows: list[list[str]]) -> str:
+    """Convert a list of rows to a markdown pipe-delimited table."""
     if not rows:
         return ""
 
@@ -135,9 +135,6 @@ def _rows_to_markdown(rows: list[list[str]], sheet_name: str | None = None) -> s
         normalized.append(padded)
 
     lines = []
-    if sheet_name:
-        lines.append(f"### Sheet: {sheet_name}\n")
-
     header = normalized[0]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("| " + " | ".join("---" for _ in header) + " |")
@@ -221,38 +218,86 @@ class DocumentExtractor:
         elements = partition_pptx(str(path))
         return self._elements_to_document(path, "pptx", elements)
 
+    # Max rows per table chunk for Excel/CSV — keeps chunks manageable
+    # for embedding and retrieval. ~50 rows × ~80 chars = ~4000 chars.
+    XLSX_ROWS_PER_CHUNK = 50
+
     def _extract_xlsx(self, path: Path) -> ExtractedDocument:
-        """Extract text from Excel spreadsheets using openpyxl for structure preservation."""
+        """
+        Extract text from Excel spreadsheets using openpyxl.
+
+        Large sheets are pre-chunked at extraction time: each chunk contains
+        the header row + up to XLSX_ROWS_PER_CHUNK data rows. This avoids
+        building a single giant markdown string and produces a reasonable
+        number of chunks even for sheets with 50k+ rows.
+        """
         import openpyxl
 
-        wb = openpyxl.load_workbook(str(path), data_only=True)
+        wb = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
         pages = []
+        total_rows = 0
 
         for sheet_idx, sheet_name in enumerate(wb.sheetnames, start=1):
             ws = wb[sheet_name]
-            rows = []
-            for row in ws.iter_rows(values_only=True):
-                # Skip completely empty rows
-                if any(cell is not None for cell in row):
-                    rows.append([str(cell) if cell is not None else "" for cell in row])
 
-            if not rows:
+            # Collect all non-empty rows, stringify cells
+            all_rows: list[list[str]] = []
+            for row in ws.iter_rows(values_only=True):
+                if any(cell is not None for cell in row):
+                    all_rows.append([str(cell) if cell is not None else "" for cell in row])
+
+            if not all_rows:
                 continue
 
-            md_table = _rows_to_markdown(rows, sheet_name=sheet_name)
-            plain_text = md_table
+            total_rows += len(all_rows)
 
-            elements = [
-                ContentElement(
+            # First row is always the header
+            header_row = all_rows[0]
+            data_rows = all_rows[1:]
+
+            # Pre-chunk: split data rows into groups of XLSX_ROWS_PER_CHUNK
+            elements: list[ContentElement] = []
+
+            if not data_rows:
+                # Header-only sheet
+                md = _rows_to_markdown([header_row])
+                elements.append(ContentElement(
                     element_type=ElementType.TABLE,
-                    text=md_table,
-                    metadata={"sheet_name": sheet_name},
-                )
-            ]
+                    text=md,
+                    metadata={
+                        "sheet_name": sheet_name,
+                        "section_header": f"Sheet: {sheet_name}",
+                        "row_range": "header only",
+                    },
+                ))
+            else:
+                for start in range(0, len(data_rows), self.XLSX_ROWS_PER_CHUNK):
+                    batch = data_rows[start:start + self.XLSX_ROWS_PER_CHUNK]
+                    # Always include header row so each chunk is self-contained
+                    chunk_rows = [header_row] + batch
+                    md = _rows_to_markdown(chunk_rows)
+
+                    row_start = start + 2  # +2 because row 1 is header (1-indexed)
+                    row_end = row_start + len(batch) - 1
+
+                    elements.append(ContentElement(
+                        element_type=ElementType.TABLE,
+                        text=md,
+                        metadata={
+                            "sheet_name": sheet_name,
+                            "section_header": f"Sheet: {sheet_name}",
+                            "row_range": f"rows {row_start}-{row_end}",
+                        },
+                    ))
+
+            # Build page text for full_text() (first chunk only for summary)
+            page_text = f"### Sheet: {sheet_name} ({len(all_rows)} rows)\n\n{elements[0].text}"
+            if len(elements) > 1:
+                page_text += f"\n\n... and {len(elements) - 1} more table segments"
 
             pages.append(ExtractedPage(
                 page_number=sheet_idx,
-                text=plain_text,
+                text=page_text,
                 elements=elements,
                 metadata={"source_file": path.name, "sheet_name": sheet_name},
             ))
@@ -266,42 +311,63 @@ class DocumentExtractor:
             metadata={
                 "source_path": str(path),
                 "page_count": len(pages),
+                "total_rows": total_rows,
             },
         )
         doc.total_text = doc.full_text()
 
         logger.info(
-            f"Extracted {path.name}: {len(pages)} sheets, "
-            f"{len(doc.total_text)} chars"
+            f"Extracted {path.name}: {len(pages)} sheets, {total_rows} total rows, "
+            f"{sum(len(p.elements) for p in pages)} table segments"
         )
         return doc
 
     def _extract_csv(self, path: Path) -> ExtractedDocument:
-        """Extract text from CSV files, preserving as markdown table."""
+        """Extract text from CSV files, pre-chunked for large files."""
         text = path.read_text(encoding="utf-8-sig")
         reader = csv.reader(io.StringIO(text))
-        rows = [row for row in reader if any(cell.strip() for cell in row)]
+        all_rows = [row for row in reader if any(cell.strip() for cell in row)]
 
-        if not rows:
+        if not all_rows:
             return ExtractedDocument(
                 filename=path.name,
                 file_type="csv",
                 error="CSV file is empty",
             )
 
-        md_table = _rows_to_markdown(rows)
+        header_row = all_rows[0]
+        data_rows = all_rows[1:]
 
-        elements = [
-            ContentElement(
+        elements: list[ContentElement] = []
+
+        if not data_rows:
+            md = _rows_to_markdown([header_row])
+            elements.append(ContentElement(
                 element_type=ElementType.TABLE,
-                text=md_table,
-                metadata={"row_count": len(rows)},
-            )
-        ]
+                text=md,
+                metadata={"row_count": 1},
+            ))
+        else:
+            for start in range(0, len(data_rows), self.XLSX_ROWS_PER_CHUNK):
+                batch = data_rows[start:start + self.XLSX_ROWS_PER_CHUNK]
+                chunk_rows = [header_row] + batch
+                md = _rows_to_markdown(chunk_rows)
+
+                row_start = start + 2
+                row_end = row_start + len(batch) - 1
+
+                elements.append(ContentElement(
+                    element_type=ElementType.TABLE,
+                    text=md,
+                    metadata={
+                        "row_count": len(batch),
+                        "row_range": f"rows {row_start}-{row_end}",
+                    },
+                ))
 
         page = ExtractedPage(
             page_number=1,
-            text=md_table,
+            text=elements[0].text,
             elements=elements,
             metadata={"source_file": path.name},
         )
@@ -310,11 +376,14 @@ class DocumentExtractor:
             filename=path.name,
             file_type="csv",
             pages=[page],
-            metadata={"source_path": str(path), "page_count": 1},
+            metadata={"source_path": str(path), "page_count": 1, "total_rows": len(all_rows)},
         )
-        doc.total_text = md_table
+        doc.total_text = doc.full_text()
 
-        logger.info(f"Extracted {path.name}: {len(rows)} rows, {len(md_table)} chars")
+        logger.info(
+            f"Extracted {path.name}: {len(all_rows)} rows, "
+            f"{len(elements)} table segments"
+        )
         return doc
 
     def _extract_image(self, path: Path) -> ExtractedDocument:

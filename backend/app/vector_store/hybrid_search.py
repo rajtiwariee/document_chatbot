@@ -161,6 +161,7 @@ class HybridSearcher:
                         "chunk_index": payload.get("chunk_index", 0),
                         "element_type": payload.get("element_type", "text"),
                         "section_header": payload.get("section_header", ""),
+                        "sheet_name": payload.get("sheet_name", ""),
                     },
                 ))
 

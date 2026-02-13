@@ -110,6 +110,7 @@ class TenantVectorStore:
                     "file_type": chunk.metadata.get("file_type", ""),
                     "element_type": chunk.metadata.get("element_type", "text"),
                     "section_header": chunk.metadata.get("section_header", ""),
+                    "sheet_name": chunk.metadata.get("sheet_name", ""),
                 },
             )
             for chunk, embedding in zip(chunks, embeddings)
@@ -188,6 +189,7 @@ class TenantVectorStore:
                     "chunk_index": hit.payload.get("chunk_index", 0),
                     "element_type": hit.payload.get("element_type", "text"),
                     "section_header": hit.payload.get("section_header", ""),
+                    "sheet_name": hit.payload.get("sheet_name", ""),
                 },
             )
             for hit in response.points

@@ -73,15 +73,30 @@ def _format_search_results(results, include_score: bool = True) -> str:
     formatted = []
     for i, result in enumerate(results, 1):
         source = result.metadata.get("source_file", "Unknown")
-        page = f", Page {result.page_number}" if result.page_number else ""
+        file_type = result.metadata.get("file_type", "")
+        sheet_name = result.metadata.get("sheet_name", "")
+
+        # For Excel/CSV: show "Sheet: X" instead of "Page N"
+        if sheet_name:
+            location = f", Sheet: {sheet_name}"
+        elif result.page_number:
+            location = f", Page {result.page_number}"
+        else:
+            location = ""
+
         section = result.metadata.get("section_header", "")
-        section_str = f", Section: {section}" if section else ""
+        # Don't repeat section if it's the same as sheet name
+        if section and section != f"Sheet: {sheet_name}":
+            section_str = f", Section: {section}"
+        else:
+            section_str = ""
+
         el_type = result.metadata.get("element_type", "text")
         type_str = f" [{el_type}]" if el_type != "text" else ""
 
-        header = f"[Source {i}: {source}{page}{section_str}{type_str}]"
+        header = f"[Source {i}: {source}{location}{section_str}{type_str}]"
         if include_score:
-            header = f"[Source {i}: {source}{page}{section_str}{type_str} (relevance: {result.score:.2f})]"
+            header = f"[Source {i}: {source}{location}{section_str}{type_str} (relevance: {result.score:.2f})]"
 
         formatted.append(f"{header}\n{result.chunk_text}\n")
 
@@ -166,11 +181,17 @@ def create_document_search_tool(tenant_id: str):
 
         formatted = []
         for i, result in enumerate(results, 1):
-            page = f"Page {result.page_number}" if result.page_number else "N/A"
+            sheet = result.metadata.get("sheet_name", "")
+            if sheet:
+                loc = f"Sheet: {sheet}"
+            elif result.page_number:
+                loc = f"Page {result.page_number}"
+            else:
+                loc = "N/A"
             el_type = result.metadata.get("element_type", "text")
             type_str = f" [{el_type}]" if el_type != "text" else ""
             formatted.append(
-                f"[Passage {i}, {page}{type_str}]\n{result.chunk_text}\n"
+                f"[Passage {i}, {loc}{type_str}]\n{result.chunk_text}\n"
             )
 
         return "\n---\n".join(formatted)

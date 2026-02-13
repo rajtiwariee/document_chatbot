@@ -202,6 +202,8 @@ class SemanticChunker:
                 else:
                     sub_chunks = [element.text]
 
+                sheet_name = element.metadata.get("sheet_name", "")
+
                 for table_text in sub_chunks:
                     if not table_text.strip():
                         continue
@@ -219,6 +221,7 @@ class SemanticChunker:
                                 "chunk_index": chunk_index,
                                 "element_type": ElementType.TABLE.value,
                                 "section_header": section,
+                                "sheet_name": sheet_name,
                             },
                         )
                     )
