@@ -3,25 +3,33 @@ Chat API endpoints.
 
 Provides endpoints for chatting with the LangGraph ReAct agent,
 streaming responses, and managing conversation history.
+Supports both JSON and multipart/form-data (with file attachments).
 """
 import json
-import uuid
 import logging
+import re
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_core.messages import HumanMessage, AIMessage
 
+from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
 from app.models.conversation import Conversation, Message
 from app.api.auth import get_current_user
 from app.agent.graph import create_agent_graph
+from app.agent.attachment_processor import (
+    process_attachments,
+    AttachmentContext,
+    ALLOWED_MIMES,
+)
 
 logger = logging.getLogger(__name__)
+settings = get_settings()
 
 router = APIRouter()
 
@@ -54,29 +62,331 @@ class ConversationSummary(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Attachment validation
+# ---------------------------------------------------------------------------
+def _validate_files(files: list[UploadFile]) -> None:
+    """Validate attachment count, size, and MIME type."""
+    max_count = settings.chat_attachment_max_count
+    max_bytes = settings.chat_attachment_max_size_mb * 1024 * 1024
+
+    if len(files) > max_count:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {max_count} attachments allowed.",
+        )
+
+    for f in files:
+        mime = f.content_type or "application/octet-stream"
+        if mime not in ALLOWED_MIMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type: {mime} ({f.filename})",
+            )
+        if f.size and f.size > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File too large: {f.filename} ({f.size / 1024 / 1024:.1f}MB, max {settings.chat_attachment_max_size_mb}MB)",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Build multimodal HumanMessage from attachments
+# ---------------------------------------------------------------------------
+def _build_human_message(
+    text: str,
+    attachment_ctx: AttachmentContext | None,
+) -> HumanMessage:
+    """Build a HumanMessage, potentially with multimodal content blocks."""
+    if not attachment_ctx or not attachment_ctx.attachments:
+        return HumanMessage(content=text or "")
+
+    content_blocks = []
+
+    # Build text context from document/spreadsheet attachments
+    extra_context_parts = []
+    for att in attachment_ctx.attachments:
+        if att.category == "document" and att.extracted_text:
+            extra_context_parts.append(
+                f"\n--- Attached file: {att.filename} ---\n{att.extracted_text}"
+            )
+        elif att.category == "spreadsheet" and att.spreadsheet_summary:
+            extra_context_parts.append(
+                f"\n--- Attached spreadsheet: {att.filename} (attachment_id: {att.attachment_id}) ---\n"
+                f"{att.spreadsheet_summary}"
+            )
+
+    full_text = (text or "").strip()
+    if extra_context_parts:
+        full_text += "\n" + "\n".join(extra_context_parts)
+
+    if full_text:
+        content_blocks.append({"type": "text", "text": full_text})
+
+    # Add image data URLs
+    for att in attachment_ctx.attachments:
+        if att.category == "image" and att.image_data_url:
+            content_blocks.append({
+                "type": "image_url",
+                "image_url": {"url": att.image_data_url},
+            })
+
+    if not content_blocks:
+        return HumanMessage(content=text or "")
+
+    return HumanMessage(content=content_blocks)
+
+
+def _get_attachment_suffix(attachment_ctx: AttachmentContext | None) -> str:
+    """Build a suffix like ' [Attached: file1.csv, photo.png]' for DB storage."""
+    if not attachment_ctx or not attachment_ctx.attachments:
+        return ""
+    names = [a.filename for a in attachment_ctx.attachments]
+    return f" [Attached: {', '.join(names)}]"
+
+
+def _get_attachment_ids(attachment_ctx: AttachmentContext | None) -> list[str]:
+    """Extract spreadsheet attachment IDs for agent state."""
+    if not attachment_ctx:
+        return []
+    return [
+        a.attachment_id
+        for a in attachment_ctx.attachments
+        if a.category == "spreadsheet"
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Chat Endpoints
 # ---------------------------------------------------------------------------
 @router.post("/", response_model=ChatResponse)
-async def chat(
-    request: ChatRequest,
+async def chat_endpoint(
+    request: Request,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Send a message to the document assistant.
-    Creates a new conversation or continues an existing one.
+    Accepts JSON or multipart/form-data (with file attachments).
     """
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        message = form.get("message", "")
+        conversation_id = form.get("conversation_id") or None
+        files = form.getlist("files")
+        # Filter to actual UploadFile objects
+        files = [f for f in files if isinstance(f, UploadFile)]
+    else:
+        body = await request.json()
+        message = body.get("message", "")
+        conversation_id = body.get("conversation_id")
+        files = []
+
+    return await _handle_chat(message, conversation_id, files, current_user, db)
+
+
+@router.post("/stream")
+async def chat_stream(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Stream chat response via Server-Sent Events (SSE).
+    Accepts JSON or multipart/form-data (with file attachments).
+    """
+    content_type = request.headers.get("content-type", "")
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        message = form.get("message", "")
+        conversation_id = form.get("conversation_id") or None
+        files = form.getlist("files")
+        files = [f for f in files if isinstance(f, UploadFile)]
+    else:
+        body = await request.json()
+        message = body.get("message", "")
+        conversation_id = body.get("conversation_id")
+        files = []
+
+    return await _handle_chat_stream(message, conversation_id, files, current_user, db)
+
+
+# ---------------------------------------------------------------------------
+# Core chat logic
+# ---------------------------------------------------------------------------
+async def _handle_chat(
+    message: str,
+    conversation_id: str | None,
+    files: list[UploadFile],
+    current_user: User,
+    db: AsyncSession,
+) -> ChatResponse:
+    """Core chat handler shared by JSON and multipart endpoints."""
     tenant_id = str(current_user.tenant_id)
     user_id = str(current_user.id)
 
-    # Get or create conversation
+    # Validate files
+    if files:
+        _validate_files(files)
+
+    attachment_ctx = None
+    try:
+        # Process attachments
+        if files:
+            attachment_ctx = await process_attachments(files)
+
+        # Get or create conversation
+        conversation, history_messages = await _get_or_create_conversation(
+            db, current_user, conversation_id, message,
+        )
+
+        # Save user message (text + attachment suffix for DB)
+        msg_count = len(history_messages)
+        db_content = message + _get_attachment_suffix(attachment_ctx)
+        user_msg = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content=db_content,
+            sequence=msg_count,
+        )
+        db.add(user_msg)
+
+        # Build agent state
+        human_msg = _build_human_message(message, attachment_ctx)
+        all_messages = history_messages + [human_msg]
+
+        agent = create_agent_graph(tenant_id)
+        result = await agent.ainvoke({
+            "messages": all_messages,
+            "tenant_id": tenant_id,
+            "user_id": user_id,
+            "reflection_count": 0,
+            "attachment_ids": _get_attachment_ids(attachment_ctx),
+        })
+
+        final_message = result["messages"][-1]
+        response_text = _get_text_content(final_message.content)
+        sources = _extract_sources(result["messages"])
+
+        assistant_msg = Message(
+            conversation_id=conversation.id,
+            role="assistant",
+            content=response_text,
+            sources=sources,
+            sequence=msg_count + 1,
+        )
+        db.add(assistant_msg)
+
+        return ChatResponse(
+            message=response_text,
+            sources=sources,
+            conversation_id=str(conversation.id),
+        )
+    finally:
+        if attachment_ctx:
+            attachment_ctx.cleanup()
+
+
+async def _handle_chat_stream(
+    message: str,
+    conversation_id: str | None,
+    files: list[UploadFile],
+    current_user: User,
+    db: AsyncSession,
+) -> StreamingResponse:
+    """Core streaming chat handler."""
+    tenant_id = str(current_user.tenant_id)
+    user_id = str(current_user.id)
+
+    if files:
+        _validate_files(files)
+
+    attachment_ctx = None
+    if files:
+        attachment_ctx = await process_attachments(files)
+
+    conversation, history_messages = await _get_or_create_conversation(
+        db, current_user, conversation_id, message,
+    )
+
+    msg_count = len(history_messages)
+    db_content = message + _get_attachment_suffix(attachment_ctx)
+    user_msg = Message(
+        conversation_id=conversation.id,
+        role="user",
+        content=db_content,
+        sequence=msg_count,
+    )
+    db.add(user_msg)
+    await db.flush()
+
+    human_msg = _build_human_message(message, attachment_ctx)
+    all_messages = history_messages + [human_msg]
+    attachment_ids = _get_attachment_ids(attachment_ctx)
+
+    async def generate():
+        try:
+            agent = create_agent_graph(tenant_id)
+            full_response = ""
+            sources = []
+
+            async for event in agent.astream(
+                {
+                    "messages": all_messages,
+                    "tenant_id": tenant_id,
+                    "user_id": user_id,
+                    "reflection_count": 0,
+                    "attachment_ids": attachment_ids,
+                },
+                stream_mode="values",
+            ):
+                messages = event.get("messages", [])
+                if messages:
+                    last = messages[-1]
+                    if hasattr(last, "content") and last.content:
+                        if not hasattr(last, "tool_calls") or not last.tool_calls:
+                            text = _get_text_content(last.content)
+                            if text:
+                                full_response = text
+                                sources = _extract_sources(messages)
+                                yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
+
+            yield f"data: {json.dumps({'type': 'done', 'conversation_id': str(conversation.id), 'sources': sources})}\n\n"
+
+            if full_response:
+                async with db.begin_nested():
+                    assistant_msg = Message(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content=full_response,
+                        sources=sources,
+                        sequence=msg_count + 1,
+                    )
+                    db.add(assistant_msg)
+        finally:
+            if attachment_ctx:
+                attachment_ctx.cleanup()
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ---------------------------------------------------------------------------
+# Shared conversation helper
+# ---------------------------------------------------------------------------
+async def _get_or_create_conversation(
+    db: AsyncSession,
+    current_user: User,
+    conversation_id: str | None,
+    message: str,
+) -> tuple:
+    """Get existing or create new conversation. Returns (conversation, history_messages)."""
     conversation = None
     history_messages = []
 
-    if request.conversation_id:
+    if conversation_id:
         result = await db.execute(
             select(Conversation)
-            .where(Conversation.id == request.conversation_id)
+            .where(Conversation.id == conversation_id)
             .where(Conversation.tenant_id == current_user.tenant_id)
             .where(Conversation.user_id == current_user.id)
         )
@@ -84,7 +394,6 @@ async def chat(
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        # Load conversation history
         msg_result = await db.execute(
             select(Message)
             .where(Message.conversation_id == conversation.id)
@@ -97,166 +406,16 @@ async def chat(
                 history_messages.append(AIMessage(content=msg.content))
 
     if not conversation:
-        # Create new conversation
         conversation = Conversation(
             tenant_id=current_user.tenant_id,
             user_id=current_user.id,
-            title=request.message[:100],
+            title=(message or "New conversation")[:100],
         )
         db.add(conversation)
         await db.flush()
         await db.refresh(conversation)
 
-    # Save user message
-    msg_count = len(history_messages)
-    user_msg = Message(
-        conversation_id=conversation.id,
-        role="user",
-        content=request.message,
-        sequence=msg_count,
-    )
-    db.add(user_msg)
-
-    # Build agent state with history + new message
-    all_messages = history_messages + [HumanMessage(content=request.message)]
-
-    # Run the agent
-    agent = create_agent_graph(tenant_id)
-    result = await agent.ainvoke({
-        "messages": all_messages,
-        "tenant_id": tenant_id,
-        "user_id": user_id,
-        "reflection_count": 0,
-    })
-
-    # Extract the final response
-    final_message = result["messages"][-1]
-    response_text = _get_text_content(final_message.content)
-
-    # Extract sources from tool calls in the message history
-    sources = _extract_sources(result["messages"])
-
-    # Save assistant message
-    assistant_msg = Message(
-        conversation_id=conversation.id,
-        role="assistant",
-        content=response_text,
-        sources=sources,
-        sequence=msg_count + 1,
-    )
-    db.add(assistant_msg)
-
-    return ChatResponse(
-        message=response_text,
-        sources=sources,
-        conversation_id=str(conversation.id),
-    )
-
-
-@router.post("/stream")
-async def chat_stream(
-    request: ChatRequest,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """
-    Stream chat response via Server-Sent Events (SSE).
-    The frontend receives chunks as they are generated.
-    """
-    tenant_id = str(current_user.tenant_id)
-    user_id = str(current_user.id)
-
-    # Get or create conversation (same logic as non-streaming)
-    conversation = None
-    history_messages = []
-
-    if request.conversation_id:
-        result = await db.execute(
-            select(Conversation)
-            .where(Conversation.id == request.conversation_id)
-            .where(Conversation.tenant_id == current_user.tenant_id)
-            .where(Conversation.user_id == current_user.id)
-        )
-        conversation = result.scalar_one_or_none()
-        if conversation:
-            msg_result = await db.execute(
-                select(Message)
-                .where(Message.conversation_id == conversation.id)
-                .order_by(Message.sequence.asc())
-            )
-            for msg in msg_result.scalars().all():
-                if msg.role == "user":
-                    history_messages.append(HumanMessage(content=msg.content))
-                else:
-                    history_messages.append(AIMessage(content=msg.content))
-
-    if not conversation:
-        conversation = Conversation(
-            tenant_id=current_user.tenant_id,
-            user_id=current_user.id,
-            title=request.message[:100],
-        )
-        db.add(conversation)
-        await db.flush()
-        await db.refresh(conversation)
-
-    # Save user message
-    msg_count = len(history_messages)
-    user_msg = Message(
-        conversation_id=conversation.id,
-        role="user",
-        content=request.message,
-        sequence=msg_count,
-    )
-    db.add(user_msg)
-    await db.flush()
-
-    all_messages = history_messages + [HumanMessage(content=request.message)]
-
-    async def generate():
-        agent = create_agent_graph(tenant_id)
-        full_response = ""
-        sources = []
-
-        # Stream the agent execution
-        async for event in agent.astream(
-            {
-                "messages": all_messages,
-                "tenant_id": tenant_id,
-                "user_id": user_id,
-                "reflection_count": 0,
-            },
-            stream_mode="values",
-        ):
-            messages = event.get("messages", [])
-            if messages:
-                last = messages[-1]
-                if hasattr(last, "content") and last.content:
-                    if not hasattr(last, "tool_calls") or not last.tool_calls:
-                        # This is a final text response
-                        text = _get_text_content(last.content)
-                        if text:
-                            full_response = text
-                            sources = _extract_sources(messages)
-
-                            yield f"data: {json.dumps({'type': 'chunk', 'content': text})}\n\n"
-
-        # Send final event with sources and conversation_id
-        yield f"data: {json.dumps({'type': 'done', 'conversation_id': str(conversation.id), 'sources': sources})}\n\n"
-
-        # Save assistant message (fire-and-forget within the generator)
-        if full_response:
-            async with db.begin_nested():
-                assistant_msg = Message(
-                    conversation_id=conversation.id,
-                    role="assistant",
-                    content=full_response,
-                    sources=sources,
-                    sequence=msg_count + 1,
-                )
-                db.add(assistant_msg)
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return conversation, history_messages
 
 
 # ---------------------------------------------------------------------------
@@ -390,8 +549,6 @@ def _extract_sources(messages) -> list[dict]:
 
     for msg in messages:
         if hasattr(msg, "content") and isinstance(msg.content, str):
-            # Look for [Source N: filename, Page X] patterns
-            import re
             pattern = r'\[Source \d+: ([^,\]]+)(?:, Page (\d+))?\s*(?:\(relevance: ([\d.]+)\))?\]'
             matches = re.findall(pattern, msg.content)
 

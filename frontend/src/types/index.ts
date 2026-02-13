@@ -12,6 +12,13 @@ export interface AuthResponse {
   user: User;
 }
 
+export interface ChatAttachment {
+  id: string;
+  file: File;
+  preview?: string;
+  type: 'image' | 'document' | 'spreadsheet';
+}
+
 export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
@@ -19,6 +26,7 @@ export interface ChatMessage {
   timestamp?: number;
   created_at?: string;
   sources?: any[];
+  attachments?: ChatAttachment[];
 }
 
 export interface ConversationSummary {

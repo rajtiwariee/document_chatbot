@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # File Upload & Storage
     upload_dir: str = "./uploads"
     max_file_size_mb: int = 100
+
+    # Chat Attachments
+    chat_attachment_max_size_mb: int = 10
+    chat_attachment_max_count: int = 3
     storage_backend: str = "local"    # "local" or "gcs"
     gcs_bucket_name: str = ""
     

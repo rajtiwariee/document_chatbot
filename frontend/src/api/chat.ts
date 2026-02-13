@@ -1,9 +1,11 @@
 import { client } from './client';
+import type { ConversationSummary, ChatMessage } from '../types';
 
 
 export interface ChatRequest {
   message: string;
   conversation_id?: string;
+  files?: File[];
 }
 
 export interface ChatResponse {
@@ -22,11 +24,27 @@ export interface ConversationDetail {
   messages: ChatMessage[];
 }
 
-import type { ConversationSummary, ChatMessage } from '../types';
-
 export const chat = {
   sendMessage: async (data: ChatRequest): Promise<ChatResponse> => {
-    const response = await client.post<ChatResponse>('/chat', data);
+    if (data.files && data.files.length > 0) {
+      const formData = new FormData();
+      formData.append('message', data.message);
+      if (data.conversation_id) {
+        formData.append('conversation_id', data.conversation_id);
+      }
+      for (const file of data.files) {
+        formData.append('files', file);
+      }
+      const response = await client.post<ChatResponse>('/chat', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      return response.data;
+    }
+
+    const response = await client.post<ChatResponse>('/chat', {
+      message: data.message,
+      conversation_id: data.conversation_id,
+    });
     return response.data;
   },
 

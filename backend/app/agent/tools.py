@@ -6,6 +6,7 @@ retrieve, compute, and analyze information from the tenant's
 indexed documents.
 """
 import ast
+import io
 import logging
 import math
 import operator
@@ -13,6 +14,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
+import pandas as pd
 from langchain_core.tools import tool
 from sqlalchemy import select
 
@@ -23,6 +25,8 @@ from app.vector_store.hybrid_search import HybridSearcher
 from app.vector_store.reranker import GeminiReranker
 from app.models.document import Document
 from app.database import async_session_maker
+from app.agent.attachment_processor import get_dataframe
+from app.agent.spreadsheet_tool import execute_query
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -603,6 +607,79 @@ def create_compare_documents_tool(tenant_id: str):
     return compare_documents
 
 
+def create_spreadsheet_query_tool(tenant_id: str):
+    """Create a tool to query spreadsheet data using natural language."""
+
+    @tool
+    async def query_spreadsheet(question: str, file_identifier: str) -> str:
+        """
+        Query a CSV or XLSX spreadsheet using natural language.
+
+        Use this tool for precise data queries on tabular data: totals,
+        averages, filtering, grouping, sorting, counting, etc.
+        Prefer this over search_documents for numerical/aggregation questions.
+
+        Args:
+            question: Natural language question about the data, e.g.
+                      "What is the total price?" or "How many rows have status=Active?"
+            file_identifier: Either "attachment:<uuid>" for a chat-attached file,
+                            or "document:<uuid>" for a permanently indexed document.
+
+        Returns:
+            The query result with the generated pandas code.
+        """
+        logger.info(
+            f"Tool query_spreadsheet: question='{question}', "
+            f"file={file_identifier}, tenant={tenant_id}"
+        )
+
+        df = None
+
+        if file_identifier.startswith("attachment:"):
+            att_id = file_identifier.split(":", 1)[1]
+            df = get_dataframe(att_id)
+            if df is None:
+                return f"Attachment {att_id} not found or not a spreadsheet."
+
+        elif file_identifier.startswith("document:"):
+            doc_id = file_identifier.split(":", 1)[1]
+            try:
+                async with async_session_maker() as session:
+                    stmt = (
+                        select(Document)
+                        .where(Document.id == doc_id)
+                        .where(Document.tenant_id == tenant_id)
+                    )
+                    result = await session.execute(stmt)
+                    doc = result.scalar_one_or_none()
+
+                    if not doc:
+                        return f"Document {doc_id} not found."
+
+                    ext = doc.original_filename.rsplit(".", 1)[-1].lower()
+                    if ext not in ("csv", "xlsx"):
+                        return f"Document {doc.original_filename} is not a spreadsheet (type: {ext})."
+
+                    from app.middleware.file_storage import get_storage
+                    storage = get_storage()
+                    file_bytes = storage.read(doc.tenant_id, doc.file_path)
+
+                    if ext == "csv":
+                        df = pd.read_csv(io.BytesIO(file_bytes))
+                    else:
+                        df = pd.read_excel(io.BytesIO(file_bytes))
+
+            except Exception as e:
+                logger.error(f"Error loading document for spreadsheet query: {e}")
+                return f"Error loading document: {e}"
+        else:
+            return f"Invalid file_identifier format: {file_identifier}. Use 'attachment:<id>' or 'document:<id>'."
+
+        return execute_query(df, question)
+
+    return query_spreadsheet
+
+
 def get_agent_tools(tenant_id: str) -> list:
     """Get all tools for the agent, bound to a tenant."""
     return [
@@ -613,4 +690,5 @@ def get_agent_tools(tenant_id: str) -> list:
         create_date_calculator_tool(),
         create_summarize_document_tool(tenant_id),
         create_compare_documents_tool(tenant_id),
+        create_spreadsheet_query_tool(tenant_id),
     ]

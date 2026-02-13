@@ -24,3 +24,4 @@ class AgentState(TypedDict):
     tenant_id: str
     user_id: str
     reflection_count: int
+    attachment_ids: list[str]
