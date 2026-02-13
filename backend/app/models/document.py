@@ -25,6 +25,7 @@ class DocumentType(str, Enum):
     DOCX = "docx"
     PPTX = "pptx"
     XLSX = "xlsx"
+    CSV = "csv"
     IMAGE = "image"
     OTHER = "other"
 

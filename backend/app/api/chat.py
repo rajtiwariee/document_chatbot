@@ -126,6 +126,7 @@ async def chat(
         "messages": all_messages,
         "tenant_id": tenant_id,
         "user_id": user_id,
+        "reflection_count": 0,
     })
 
     # Extract the final response
@@ -223,6 +224,7 @@ async def chat_stream(
                 "messages": all_messages,
                 "tenant_id": tenant_id,
                 "user_id": user_id,
+                "reflection_count": 0,
             },
             stream_mode="values",
         ):

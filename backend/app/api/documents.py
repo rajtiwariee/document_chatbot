@@ -28,6 +28,8 @@ MIME_TYPE_MAP = {
     "image/png": DocumentType.IMAGE,
     "image/jpeg": DocumentType.IMAGE,
     "image/tiff": DocumentType.IMAGE,
+    "text/csv": DocumentType.CSV,
+    "application/csv": DocumentType.CSV,
     "text/plain": DocumentType.OTHER,
 }
 

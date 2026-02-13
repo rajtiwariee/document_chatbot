@@ -1,19 +1,19 @@
 """
-LangGraph ReAct Agent workflow.
+LangGraph ReAct Agent workflow for Automobile SSU Document Chatbot.
 
-Implements a Reason-Act-Observe loop:
-1. The LLM reasons about the user's question
-2. If needed, it calls a tool (search documents)
-3. It observes the tool output
-4. It generates a final answer with source citations
-
-The graph automatically loops between reasoning and acting
-until the LLM decides it has enough information to answer.
+Graph flow:
+    [Start] → decompose → agent → should_continue?
+                                    ├─ tool_calls → tools → agent (loop)
+                                    └─ no tool_calls → reflect → should_retry?
+                                                                  ├─ incomplete → agent (max 1 retry)
+                                                                  └─ adequate → [End]
 """
 import logging
 
+from google import genai
+from google.genai import types
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
@@ -24,32 +24,93 @@ from app.agent.tools import get_agent_tools
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are a helpful document assistant. You help users find information in their uploaded documents.
+SYSTEM_PROMPT = """You are an expert document assistant for an automobile Shared Service Unit (SSU). You help users find and analyze information in their uploaded documents, which typically include parts catalogs, pricing tables, service manuals, specification sheets, compliance reports, and Excel/CSV data files.
 
-Rules:
-1. ALWAYS use the search_documents tool to find information before answering.
-2. If the user asks about a specific document, use search_specific_document.
-3. Base your answers ONLY on information found in the documents.
-4. If no relevant information is found, say so honestly.
-5. Always cite your sources at the end of your response in this format:
-   **Sources:**
-   - [Document Name, Page X]
-6. Be concise but thorough. Quote relevant passages when helpful.
-7. If the user's question is conversational (greetings, thanks), respond naturally without searching."""
+## Domain Knowledge
+- Part numbers follow patterns like "BRK-45821", "ENG-10034", "FLT-7890"
+- Service intervals are typically measured in miles or months
+- Pricing data often appears in tables with columns for part number, description, unit price, quantity
+- Compliance reports reference standards like ISO, SAE, FMVSS
+
+## Rules
+1. ALWAYS use the search_documents tool to find information before answering factual questions.
+2. If the user asks about a specific document, use search_specific_document with its ID.
+3. Base your answers ONLY on information found in the documents. Never fabricate data.
+4. If no relevant information is found, say so honestly — do not guess.
+5. When presenting tabular data (prices, specs, part lists), format as a markdown table.
+6. For numerical questions (totals, differences, percentages), use the calculator tool.
+7. For date-related questions (warranty periods, intervals), use the date_calculator tool.
+8. For "summarize this document" requests, use the summarize_document tool.
+9. For comparison requests, use the compare_documents tool.
+10. Always cite your sources at the end of your response:
+    **Sources:**
+    - [Document Name, Page X]
+11. Be concise but thorough. Quote relevant passages when helpful.
+12. If the user's question is conversational (greetings, thanks), respond naturally without searching."""
+
+
+async def _decompose_query(state: AgentState) -> dict:
+    """
+    Decompose complex multi-part queries into sub-steps.
+
+    Simple queries pass through unchanged. Complex queries get
+    decomposed into numbered sub-steps injected as a system hint.
+    """
+    messages = state["messages"]
+    if not messages:
+        return {"messages": []}
+
+    last_msg = messages[-1]
+    if not isinstance(last_msg, HumanMessage):
+        return {"messages": []}
+
+    query = last_msg.content
+    if not query or len(query) < 30:
+        return {"messages": []}
+
+    try:
+        client = genai.Client(api_key=settings.google_api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"""Analyze this query and determine if it requires multiple distinct steps to answer.
+
+Query: "{query}"
+
+If the query is SIMPLE (single question, single lookup), respond with exactly: SIMPLE
+If the query is COMPLEX (multiple parts, comparisons, calculations), respond with a numbered plan:
+1. First step
+2. Second step
+...
+
+Only respond with SIMPLE or the numbered plan. Nothing else.""",
+            config=types.GenerateContentConfig(temperature=0, max_output_tokens=256),
+        )
+
+        result = response.text.strip()
+        if result.upper() == "SIMPLE":
+            return {"messages": []}
+
+        # Inject decomposition as a system hint
+        hint = AIMessage(content=f"I'll break this down into steps:\n{result}\n\nLet me work through each step.")
+        return {"messages": [hint]}
+
+    except Exception as e:
+        logger.warning(f"Query decomposition failed: {e}")
+        return {"messages": []}
 
 
 def _should_continue(state: AgentState) -> str:
     """
-    Decide whether to continue to tools or end.
+    Decide whether to continue to tools or move to reflection.
 
     If the last message has tool_calls, route to the tool node.
-    Otherwise, the agent is done reasoning — route to END.
+    Otherwise, route to reflection.
     """
     last_message = state["messages"][-1]
 
     if hasattr(last_message, "tool_calls") and last_message.tool_calls:
         return "tools"
-    return END
+    return "reflect"
 
 
 async def _call_model(state: AgentState) -> dict:
@@ -58,7 +119,7 @@ async def _call_model(state: AgentState) -> dict:
 
     The LLM will either:
     - Generate a final response (no tool calls)
-    - Request a tool call (search_documents, etc.)
+    - Request a tool call (search_documents, calculator, etc.)
     """
     tenant_id = state["tenant_id"]
     tools = get_agent_tools(tenant_id)
@@ -72,12 +133,92 @@ async def _call_model(state: AgentState) -> dict:
 
     llm_with_tools = llm.bind_tools(tools)
 
-    # Prepend system message
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
-
     response = await llm_with_tools.ainvoke(messages)
 
     return {"messages": [response]}
+
+
+async def _reflect_on_answer(state: AgentState) -> dict:
+    """
+    Self-reflection node: check if the answer is adequate.
+
+    Uses a fast Gemini call to evaluate: ADEQUATE / INCOMPLETE / NO_DATA
+    """
+    messages = state["messages"]
+    if not messages:
+        return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
+
+    # Find the last AI message (the answer) and the user query
+    last_ai_msg = None
+    user_query = None
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and last_ai_msg is None:
+            last_ai_msg = msg
+        if isinstance(msg, HumanMessage) and user_query is None:
+            user_query = msg.content
+        if last_ai_msg and user_query:
+            break
+
+    if not last_ai_msg or not user_query:
+        return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
+
+    # Skip reflection for conversational responses
+    raw_content = last_ai_msg.content or ""
+    answer = raw_content if isinstance(raw_content, str) else str(raw_content)
+    if len(answer) < 20:
+        return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
+
+    try:
+        client = genai.Client(api_key=settings.google_api_key)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=f"""Evaluate if this answer adequately addresses the user's question.
+
+User question: "{user_query}"
+
+Answer: "{answer[:2000]}"
+
+Respond with exactly one word:
+- ADEQUATE — if the answer fully addresses the question with data/sources
+- INCOMPLETE — if the answer is partial or missing key details that could be found with more searching
+- NO_DATA — if the documents genuinely don't contain the needed information
+
+One word only:""",
+            config=types.GenerateContentConfig(temperature=0, max_output_tokens=10),
+        )
+
+        verdict = response.text.strip().upper()
+        logger.info(f"Reflection verdict: {verdict}")
+
+        current_count = state.get("reflection_count", 0)
+
+        if verdict == "INCOMPLETE" and current_count < 1:
+            # Send agent back for another search attempt
+            retry_hint = AIMessage(
+                content="Let me search more thoroughly to find additional details."
+            )
+            return {"messages": [retry_hint], "reflection_count": current_count + 1}
+
+        return {"messages": [], "reflection_count": current_count}
+
+    except Exception as e:
+        logger.warning(f"Reflection failed: {e}")
+        return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
+
+
+def _should_retry(state: AgentState) -> str:
+    """
+    After reflection, decide if we should retry or end.
+
+    If reflection added a retry hint message, route back to agent.
+    Otherwise, end.
+    """
+    last_message = state["messages"][-1]
+
+    if isinstance(last_message, AIMessage) and "search more thoroughly" in (last_message.content or ""):
+        return "agent"
+    return END
 
 
 def create_agent_graph(tenant_id: str) -> StateGraph:
@@ -85,9 +226,11 @@ def create_agent_graph(tenant_id: str) -> StateGraph:
     Build the LangGraph ReAct agent for a specific tenant.
 
     Graph flow:
-        [Start] → agent (LLM) → should_continue?
-                                    ├─ tool_calls → tools → agent (loop back)
-                                    └─ no tool_calls → [End]
+        [Start] → decompose → agent → should_continue?
+                                        ├─ tool_calls → tools → agent (loop)
+                                        └─ no tool_calls → reflect → should_retry?
+                                                                      ├─ incomplete → agent (max 1)
+                                                                      └─ adequate → [End]
     """
     tools = get_agent_tools(tenant_id)
     tool_node = ToolNode(tools)
@@ -95,14 +238,18 @@ def create_agent_graph(tenant_id: str) -> StateGraph:
     graph = StateGraph(AgentState)
 
     # Add nodes
+    graph.add_node("decompose", _decompose_query)
     graph.add_node("agent", _call_model)
     graph.add_node("tools", tool_node)
+    graph.add_node("reflect", _reflect_on_answer)
 
     # Set entry point
-    graph.set_entry_point("agent")
+    graph.set_entry_point("decompose")
 
-    # Add edges
-    graph.add_conditional_edges("agent", _should_continue, {"tools": "tools", END: END})
-    graph.add_edge("tools", "agent")  # After tools, go back to agent
+    # Edges
+    graph.add_edge("decompose", "agent")
+    graph.add_conditional_edges("agent", _should_continue, {"tools": "tools", "reflect": "reflect"})
+    graph.add_edge("tools", "agent")
+    graph.add_conditional_edges("reflect", _should_retry, {"agent": "agent", END: END})
 
     return graph.compile()

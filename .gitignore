@@ -8,7 +8,7 @@ venv/
 .venv/
 env/
 .env
-
+task.todo
 # IDE
 .vscode/
 .idea/

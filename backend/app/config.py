@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3-flash-preview"
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 3072  # gemini-embedding-001
+    enable_reranking: bool = True
 
     # File Upload & Storage
     upload_dir: str = "./uploads"

@@ -110,7 +110,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               className="hidden" 
               ref={fileInputRef} 
               onChange={handleFileSelect}
-              accept=".pdf,.docx,.txt,.md"
+              accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.pptx"
             />
             
             {isUploading ? (
@@ -122,7 +122,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               <>
                 <Upload className="h-8 w-8 text-muted-foreground mb-2" />
                 <p className="font-medium">Click to upload document</p>
-                <p className="text-xs text-muted-foreground mt-1">PDF, DOCX, TXT (Max 10MB)</p>
+                <p className="text-xs text-muted-foreground mt-1">PDF, DOCX, XLSX, PPTX, CSV, TXT (Max 100MB)</p>
               </>
             )}
           </div>

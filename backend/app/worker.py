@@ -192,6 +192,14 @@ def process_document(self, document_id: str):
 
         logger.info(f"[{document_id}] Stored {num_stored} vectors")
 
+        # ── Step 4b: Invalidate BM25 cache ───────────────────────────
+        try:
+            from app.vector_store.hybrid_search import HybridSearcher
+            hybrid_searcher = HybridSearcher(vector_store=vector_store)
+            hybrid_searcher.invalidate_cache(doc["tenant_id"])
+        except Exception as e:
+            logger.warning(f"[{document_id}] Failed to invalidate BM25 cache: {e}")
+
         # ── Step 5: Mark as completed ────────────────────────────────
         update_document_status(
             document_id,
