@@ -1,16 +1,16 @@
 """
 Centralized logging configuration.
 
-Call `setup_logging()` once at app startup (in main.py).
-All modules using `logging.getLogger(__name__)` will automatically
-pick up this configuration.
+Call `setup_logging()` once at app startup (in main.py) and once
+in the Celery worker signal handler so forked workers inherit it.
 
 Features:
 - Structured JSON logs for production (machine-parseable)
 - Human-readable colored logs for development
 - Rotating file output (10MB per file, keeps 5 backups)
 - Separate error log file
-- Request context (tenant_id, user_id) via log filters
+- Request context (tenant_id, user_id) via log extras
+- Celery worker-safe: re-configures after fork
 """
 import logging
 import logging.handlers
@@ -40,12 +40,11 @@ class JSONFormatter(logging.Formatter):
             "line": record.lineno,
         }
 
-        if hasattr(record, "tenant_id"):
-            log_entry["tenant_id"] = record.tenant_id
-        if hasattr(record, "user_id"):
-            log_entry["user_id"] = record.user_id
-        if hasattr(record, "document_id"):
-            log_entry["document_id"] = record.document_id
+        # Context fields
+        for attr in ("tenant_id", "user_id", "document_id"):
+            val = getattr(record, attr, None)
+            if val is not None:
+                log_entry[attr] = val
 
         if record.exc_info and record.exc_info[1]:
             log_entry["exception"] = self.formatException(record.exc_info)
@@ -57,30 +56,34 @@ class ReadableFormatter(logging.Formatter):
     """Human-readable formatter for development."""
 
     COLORS = {
-        "DEBUG": "\033[36m",     # Cyan
-        "INFO": "\033[32m",      # Green
-        "WARNING": "\033[33m",   # Yellow
-        "ERROR": "\033[31m",     # Red
-        "CRITICAL": "\033[1;31m",# Bold Red
+        "DEBUG": "\033[36m",      # Cyan
+        "INFO": "\033[32m",       # Green
+        "WARNING": "\033[33m",    # Yellow
+        "ERROR": "\033[31m",      # Red
+        "CRITICAL": "\033[1;31m", # Bold Red
     }
     RESET = "\033[0m"
 
     def format(self, record: logging.LogRecord) -> str:
         color = self.COLORS.get(record.levelname, self.RESET)
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
-        prefix = f"{color}{timestamp} {record.levelname:8s}{self.RESET}"
-        location = f"\033[90m{record.name}:{record.lineno}\033[0m"
+        level = f"{color}{record.levelname:8s}{self.RESET}"
+        # Shorten logger name: app.document_processing.extractor -> extractor
+        short_name = record.name.rsplit(".", 1)[-1] if "." in record.name else record.name
+        location = f"\033[90m{short_name}:{record.funcName}:{record.lineno}\033[0m"
         message = record.getMessage()
 
         extras = []
-        if hasattr(record, "tenant_id"):
-            extras.append(f"tenant={record.tenant_id}")
-        if hasattr(record, "document_id"):
-            extras.append(f"doc={record.document_id}")
+        for attr in ("tenant_id", "user_id", "document_id"):
+            val = getattr(record, attr, None)
+            if val is not None:
+                # Shorten UUIDs for readability
+                short = str(val)[:8] if len(str(val)) > 8 else str(val)
+                extras.append(f"{attr}={short}")
         extra_str = f" \033[90m[{', '.join(extras)}]\033[0m" if extras else ""
 
-        formatted = f"{prefix} {location} {message}{extra_str}"
+        formatted = f"{timestamp} {level} {location} {message}{extra_str}"
 
         if record.exc_info and record.exc_info[1]:
             formatted += "\n" + self.formatException(record.exc_info)
@@ -91,21 +94,22 @@ class ReadableFormatter(logging.Formatter):
 def setup_logging() -> None:
     """
     Configure logging for the entire application.
-    Call once at startup.
+
+    Safe to call multiple times (clears existing handlers first).
+    Called by:
+    - main.py lifespan (FastAPI)
+    - celery_app.py worker_process_init signal (each forked worker)
     """
     os.makedirs(LOG_DIR, exist_ok=True)
 
     log_level = logging.DEBUG if settings.debug else logging.INFO
 
+    # ── Root logger ───────────────────────────────────────────────
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-
-    # Clear any existing handlers (root + uvicorn loggers)
     root_logger.handlers.clear()
-    for _name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(_name).handlers.clear()
 
-    # --- Console handler ---
+    # ── Console handler ───────────────────────────────────────────
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(log_level)
 
@@ -116,7 +120,7 @@ def setup_logging() -> None:
 
     root_logger.addHandler(console_handler)
 
-    # --- Rotating file handler (all logs) ---
+    # ── Rotating file handler (all logs) ──────────────────────────
     file_handler = logging.handlers.RotatingFileHandler(
         filename=os.path.join(LOG_DIR, "app.log"),
         maxBytes=10 * 1024 * 1024,  # 10 MB
@@ -127,7 +131,7 @@ def setup_logging() -> None:
     file_handler.setFormatter(JSONFormatter())
     root_logger.addHandler(file_handler)
 
-    # --- Error-only file handler ---
+    # ── Error-only file handler ───────────────────────────────────
     error_handler = logging.handlers.RotatingFileHandler(
         filename=os.path.join(LOG_DIR, "error.log"),
         maxBytes=10 * 1024 * 1024,
@@ -138,11 +142,66 @@ def setup_logging() -> None:
     error_handler.setFormatter(JSONFormatter())
     root_logger.addHandler(error_handler)
 
-    # --- Quiet noisy third-party loggers ---
-    logging.getLogger("uvicorn.access").setLevel(logging.INFO)
-    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
-    logging.getLogger("celery").setLevel(logging.INFO)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # ── App loggers: ensure they propagate to root ────────────────
+    # Explicitly set our app loggers to DEBUG so nothing is missed
+    for app_logger_name in [
+        "app",
+        "app.agent",
+        "app.agent.tools",
+        "app.agent.graph",
+        "app.document_processing",
+        "app.document_processing.extractor",
+        "app.document_processing.chunker",
+        "app.document_processing.embeddings",
+        "app.vector_store",
+        "app.vector_store.store",
+        "app.vector_store.hybrid_search",
+        "app.vector_store.reranker",
+        "app.api",
+        "app.api.chat",
+        "app.api.documents",
+        "app.api.auth",
+        "app.worker",
+        "app.middleware",
+        "app.websockets",
+    ]:
+        app_log = logging.getLogger(app_logger_name)
+        app_log.setLevel(logging.DEBUG)
+        # Don't add handlers — let them propagate to root
+        app_log.propagate = True
 
-    logging.info("Logging configured: level=%s, dir=%s", log_level, LOG_DIR)
+    # ── Quiet noisy third-party loggers ───────────────────────────
+    for noisy_logger in [
+        "uvicorn",
+        "uvicorn.error",
+        "uvicorn.access",
+        "sqlalchemy.engine",
+        "celery",
+        "celery.worker",
+        "celery.app.trace",
+        "httpcore",
+        "httpx",
+        "urllib3",
+        "unstructured",
+        "unstructured.trace",
+        "PIL",
+        "pdfminer",
+        "google",
+        "google.auth",
+        "google.api_core",
+        "grpc",
+        "qdrant_client",
+        "rank_bm25",
+        "langchain",
+        "langchain_core",
+        "langsmith",
+    ]:
+        logging.getLogger(noisy_logger).setLevel(logging.WARNING)
+
+    # Let uvicorn.error through at INFO (startup/shutdown messages)
+    logging.getLogger("uvicorn.error").setLevel(logging.INFO)
+    # Let celery task-level logs through
+    logging.getLogger("celery").setLevel(logging.INFO)
+
+    logger = logging.getLogger("app")
+    logger.info("Logging configured: level=%s, log_dir=%s, debug=%s", log_level, LOG_DIR, settings.debug)

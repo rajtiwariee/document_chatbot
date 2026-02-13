@@ -15,12 +15,15 @@ from app.websockets import manager, authenticate_websocket
 
 settings = get_settings()
 
+# Configure logging EARLY — before lifespan, before uvicorn starts serving.
+# This ensures all startup logs (including DB init) are captured.
+setup_logging()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
-    setup_logging()
     await init_db()
     yield
     # Shutdown
