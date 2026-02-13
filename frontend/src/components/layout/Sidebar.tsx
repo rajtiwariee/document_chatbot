@@ -1,10 +1,11 @@
-import { Plus, MessageSquare, Trash2, FolderOpen } from "lucide-react";
+import { Plus, MessageSquare, Trash2, FolderOpen, LogOut } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
 import { chat } from "../../api/chat";
 import type { ConversationSummary } from "../../types";
 import { DocumentManager } from "../documents/DocumentManager";
+import { useAuth } from "../../context/AuthContext";
 
 interface SidebarProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export function Sidebar({
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isDocsOpen, setIsDocsOpen] = useState(false);
+  const { logout, user } = useAuth();
 
   useEffect(() => {
     fetchConversations();
@@ -118,8 +120,19 @@ export function Sidebar({
               Manage Documents
             </Button>
             
-            <div className="px-2 text-xs text-muted-foreground">
-              Logged in as User
+            <div className="flex items-center justify-between px-2 pt-2 border-t border-border">
+              <div className="text-xs text-muted-foreground truncate max-w-[120px]" title={user?.email || "User"}>
+                {user?.email || "User"}
+              </div>
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="h-6 w-6 text-muted-foreground hover:text-foreground"
+                onClick={logout}
+                title="Log out"
+              >
+                <LogOut className="h-4 w-4" />
+              </Button>
             </div>
           </div>
         </div>
