@@ -117,6 +117,45 @@ def _format_search_results(results, include_score: bool = True) -> str:
     return "\n---\n".join(formatted)
 
 
+def _enrich_image_results(results: list, query: str) -> list:
+    """
+    For search results that came from image captions, run VQA against
+    the original image to provide richer context to the LLM.
+    """
+    import asyncio
+    import os
+
+    enriched_any = False
+    for result in results:
+        content_type = result.metadata.get("content_type", "text")
+        image_path = result.metadata.get("original_image_path", "")
+
+        if content_type == "image_caption" and image_path and os.path.exists(image_path):
+            try:
+                from app.vision.base import get_vision_backend
+
+                vision = get_vision_backend()
+                loop = asyncio.new_event_loop()
+                try:
+                    vqa_answer = loop.run_until_complete(
+                        vision.visual_qa(image_path, query)
+                    )
+                finally:
+                    loop.close()
+
+                result.chunk_text += f"\n\n[Visual Q&A — from original image]: {vqa_answer}"
+                enriched_any = True
+            except Exception as e:
+                logger.warning("VQA enrichment failed for %s: %s", image_path, e)
+
+    if enriched_any:
+        logger.info("Enriched %d image results with VQA", sum(
+            1 for r in results if r.metadata.get("content_type") == "image_caption"
+        ))
+
+    return results
+
+
 def create_search_tool(tenant_id: str):
     """Create a document search tool bound to a specific tenant."""
 
@@ -151,6 +190,9 @@ def create_search_tool(tenant_id: str):
             results = reranker.rerank(query, results)
         else:
             results = results[:5]
+
+        # Enrich image caption results with VQA from original image
+        results = _enrich_image_results(results, query)
 
         return _format_search_results(results)
 

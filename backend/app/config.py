@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 3072  # gemini-embedding-001
     enable_reranking: bool = True
 
+    # Vision Backend (for multimodal RAG image captioning & VQA)
+    vision_backend: str = "gemini"  # "gemini" or "qwen_vl"
+    vision_model: str = "gemini-2.0-flash"  # Gemini model or "qwen3-vl-8b"
+    qwen_vl_endpoint: str = ""  # Vertex AI endpoint URL for Qwen-VL
+    qwen_vl_api_key: str = ""  # API key/token for Qwen-VL endpoint
+    image_storage_dir: str = "./uploads/images"  # Persistent image storage
+
     # File Upload & Storage
     upload_dir: str = "./uploads"
     max_file_size_mb: int = 100

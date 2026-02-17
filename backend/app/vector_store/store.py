@@ -130,6 +130,8 @@ class TenantVectorStore:
                     "element_type": chunk.metadata.get("element_type", "text"),
                     "section_header": chunk.metadata.get("section_header", ""),
                     "sheet_name": chunk.metadata.get("sheet_name", ""),
+                    "content_type": chunk.metadata.get("content_type", "text"),
+                    "original_image_path": chunk.metadata.get("original_image_path", ""),
                 },
             )
             for chunk, embedding in zip(chunks, embeddings)
@@ -209,6 +211,8 @@ class TenantVectorStore:
                     "element_type": hit.payload.get("element_type", "text"),
                     "section_header": hit.payload.get("section_header", ""),
                     "sheet_name": hit.payload.get("sheet_name", ""),
+                    "content_type": hit.payload.get("content_type", "text"),
+                    "original_image_path": hit.payload.get("original_image_path", ""),
                 },
             )
             for hit in response.points

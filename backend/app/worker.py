@@ -142,7 +142,66 @@ def process_document(self, document_id: str):
         from app.document_processing.extractor import DocumentExtractor
 
         extractor = DocumentExtractor()
-        extracted = extractor.extract(local_path, doc["file_type"])
+
+        # ── Image handling: caption via vision backend ────────────
+        IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+        _, file_ext = os.path.splitext(doc["filename"])
+
+        if file_ext.lower() in IMAGE_EXTENSIONS:
+            logger.info(f"[{document_id}] Image detected — captioning with vision backend")
+
+            import asyncio
+            import shutil
+            from app.vision.base import get_vision_backend
+            from app.document_processing.extractor import (
+                ExtractedDocument, ExtractedPage, ContentElement, ElementType
+            )
+
+            # Persist original image to image_storage_dir
+            os.makedirs(settings.image_storage_dir, exist_ok=True)
+            persistent_image_path = os.path.join(
+                settings.image_storage_dir, f"{document_id}{file_ext}"
+            )
+            shutil.copy2(local_path, persistent_image_path)
+            logger.info(f"[{document_id}] Image saved to {persistent_image_path}")
+
+            # Caption the image using configured vision backend
+            vision = get_vision_backend()
+            loop = asyncio.new_event_loop()
+            try:
+                caption = loop.run_until_complete(
+                    vision.caption_image(persistent_image_path)
+                )
+            finally:
+                loop.close()
+
+            logger.info(
+                f"[{document_id}] Caption generated ({len(caption)} chars)"
+            )
+
+            # Build synthetic ExtractedDocument from caption
+            extracted = ExtractedDocument(
+                filename=doc["filename"],
+                file_type="image",
+                pages=[ExtractedPage(
+                    page_number=1,
+                    text=caption,
+                    elements=[ContentElement(
+                        element_type=ElementType.TEXT,
+                        text=caption,
+                        metadata={
+                            "content_type": "image_caption",
+                            "original_image_path": persistent_image_path,
+                        },
+                    )],
+                    metadata={
+                        "content_type": "image_caption",
+                        "original_image_path": persistent_image_path,
+                    },
+                )],
+            )
+        else:
+            extracted = extractor.extract(local_path, doc["file_type"])
 
         # Clean up temp file if we created one
         if settings.storage_backend == "gcs":
