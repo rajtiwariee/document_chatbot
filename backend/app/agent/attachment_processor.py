@@ -140,6 +140,10 @@ async def process_attachments(files: list[UploadFile]) -> AttachmentContext:
             if category == "image":
                 encoded = base64.b64encode(content).decode("utf-8")
                 attachment.image_data_url = f"data:{mime};base64,{encoded}"
+                logger.info(
+                    f"Processed image attachment: {filename}, mime={mime}, "
+                    f"raw_size={len(content)}bytes, data_url_len={len(attachment.image_data_url)}"
+                )
 
             elif category == "document":
                 extractor = DocumentExtractor()

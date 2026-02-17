@@ -24,6 +24,18 @@ from app.agent.tools import get_agent_tools
 settings = get_settings()
 logger = logging.getLogger(__name__)
 
+
+def _extract_text(content) -> str:
+    """Extract plain text from a HumanMessage content (str or list of blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return str(content) if content else ""
+
 SYSTEM_PROMPT = """You are an expert document assistant for an automobile Shared Service Unit (SSU). You help users find and analyze information in their uploaded documents, which typically include parts catalogs, pricing tables, service manuals, specification sheets, compliance reports, and Excel/CSV data files.
 
 ## Domain Knowledge
@@ -70,7 +82,8 @@ async def _decompose_query(state: AgentState) -> dict:
     if not isinstance(last_msg, HumanMessage):
         return {"messages": []}
 
-    query = last_msg.content
+    query = _extract_text(last_msg.content)
+    logger.info(f"Decompose: extracted query ({len(query)} chars): {query[:100]!r}")
     if not query or len(query) < 30:
         return {"messages": []}
 
@@ -140,6 +153,25 @@ async def _call_model(state: AgentState) -> dict:
     llm_with_tools = llm.bind_tools(tools)
 
     messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
+    
+    # Log message structure sent to LLM
+    for i, msg in enumerate(messages):
+        if isinstance(msg, HumanMessage):
+            if isinstance(msg.content, list):
+                block_types = []
+                for block in msg.content:
+                    if isinstance(block, dict):
+                        btype = block.get("type", "unknown")
+                        if btype == "image_url":
+                            url = block.get("image_url", {}).get("url", "")
+                            btype = f"image_url({len(url)}chars,starts={url[:30]!r})"
+                        elif btype == "text":
+                            btype = f"text({len(block.get('text', ''))}chars)"
+                        block_types.append(btype)
+                logger.info(f"Message[{i}] HumanMessage: {len(msg.content)} blocks → {block_types}")
+            else:
+                logger.info(f"Message[{i}] HumanMessage: plain text ({len(msg.content)}chars)")
+
     response = await llm_with_tools.ainvoke(messages)
 
     return {"messages": [response]}
@@ -162,12 +194,15 @@ async def _reflect_on_answer(state: AgentState) -> dict:
         if isinstance(msg, AIMessage) and last_ai_msg is None:
             last_ai_msg = msg
         if isinstance(msg, HumanMessage) and user_query is None:
-            user_query = msg.content
+            user_query = _extract_text(msg.content)
         if last_ai_msg and user_query:
             break
 
     if not last_ai_msg or not user_query:
+        logger.info(f"Reflect: skipping — last_ai_msg={bool(last_ai_msg)}, user_query={bool(user_query)}")
         return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
+
+    logger.info(f"Reflect: user_query ({len(user_query)} chars): {user_query[:100]!r}")
 
     # Skip reflection for conversational responses
     raw_content = last_ai_msg.content or ""
@@ -193,6 +228,10 @@ Respond with exactly one word:
 One word only:""",
             config=types.GenerateContentConfig(temperature=0, max_output_tokens=10),
         )
+
+        if not response.text:
+            logger.warning("Reflection model returned no text")
+            return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
 
         verdict = response.text.strip().upper()
         logger.info(f"Reflection verdict: {verdict}")

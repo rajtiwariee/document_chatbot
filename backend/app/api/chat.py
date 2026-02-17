@@ -10,6 +10,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from starlette.datastructures import UploadFile as StarletteUploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -133,6 +134,14 @@ def _build_human_message(
     if not content_blocks:
         return HumanMessage(content=text or "")
 
+    block_summary = [
+        f"{b.get('type')}({len(b.get('image_url', {}).get('url', ''))}chars)"
+        if b.get("type") == "image_url"
+        else b.get("type")
+        for b in content_blocks
+        if isinstance(b, dict)
+    ]
+    logger.info(f"Built multimodal HumanMessage with {len(content_blocks)} blocks: {block_summary}")
     return HumanMessage(content=content_blocks)
 
 
@@ -173,9 +182,9 @@ async def chat_endpoint(
         form = await request.form()
         message = form.get("message", "")
         conversation_id = form.get("conversation_id") or None
-        files = form.getlist("files")
-        # Filter to actual UploadFile objects
-        files = [f for f in files if isinstance(f, UploadFile)]
+        raw_files = form.getlist("files")
+        files = [f for f in raw_files if isinstance(f, StarletteUploadFile)]
+        logger.info(f"Chat: {len(files)} file(s) attached — {[(f.filename, f.content_type) for f in files]}")
     else:
         body = await request.json()
         message = body.get("message", "")
@@ -200,8 +209,9 @@ async def chat_stream(
         form = await request.form()
         message = form.get("message", "")
         conversation_id = form.get("conversation_id") or None
-        files = form.getlist("files")
-        files = [f for f in files if isinstance(f, UploadFile)]
+        raw_files = form.getlist("files")
+        files = [f for f in raw_files if isinstance(f, StarletteUploadFile)]
+        logger.info(f"[stream] Chat: {len(files)} file(s) attached — {[(f.filename, f.content_type) for f in files]}")
     else:
         body = await request.json()
         message = body.get("message", "")
