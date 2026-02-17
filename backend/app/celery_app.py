@@ -20,6 +20,7 @@ celery_app.conf.update(
     enable_utc=True,
     task_track_started=True,
     worker_hijack_root_logger=False,  # Don't let Celery override our logging
+    worker_redirect_stdouts=False,    # Don't capture stdout → celery.redirected
 )
 
 

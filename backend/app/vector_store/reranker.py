@@ -62,7 +62,7 @@ class GeminiReranker:
 
         try:
             response = self.client.models.generate_content(
-                model="gemini-2.5-flash",
+                model="gemini-3-flash-preview",
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0,
@@ -71,6 +71,13 @@ class GeminiReranker:
             )
 
             response_text = response.text.strip()
+
+            # Strip markdown code fences (e.g. ```json ... ```)
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                lines = [l for l in lines if not l.strip().startswith("```")]
+                response_text = "\n".join(lines).strip()
+
             start = response_text.find("[")
             end = response_text.rfind("]") + 1
             if start == -1 or end == 0:

@@ -148,7 +148,7 @@ def process_document(self, document_id: str):
         _, file_ext = os.path.splitext(doc["filename"])
 
         if file_ext.lower() in IMAGE_EXTENSIONS:
-            logger.info(f"[{document_id}] Image detected — captioning with vision backend")
+            logger.info(f"[{document_id}] Image detected — classifying with vision backend")
 
             import asyncio
             import shutil
@@ -165,42 +165,76 @@ def process_document(self, document_id: str):
             shutil.copy2(local_path, persistent_image_path)
             logger.info(f"[{document_id}] Image saved to {persistent_image_path}")
 
-            # Caption the image using configured vision backend
             vision = get_vision_backend()
             loop = asyncio.new_event_loop()
             try:
-                caption = loop.run_until_complete(
-                    vision.caption_image(persistent_image_path)
+                # Classify the image first
+                category = loop.run_until_complete(
+                    vision.classify_image(persistent_image_path)
                 )
+                logger.info(f"[{document_id}] Image classified as '{category}'")
+
+                if category == "table":
+                    # Extract table structure as markdown
+                    table_md = loop.run_until_complete(
+                        vision.extract_table(persistent_image_path)
+                    )
+                    if table_md and table_md.strip() != "NO_TABLE_FOUND":
+                        content_text = table_md
+                        element_type = ElementType.TABLE
+                        content_type = "image_table"
+                        logger.info(
+                            f"[{document_id}] Table extracted ({len(table_md)} chars)"
+                        )
+                    else:
+                        # Fallback to caption if table extraction fails
+                        content_text = loop.run_until_complete(
+                            vision.caption_image(persistent_image_path)
+                        )
+                        element_type = ElementType.TEXT
+                        content_type = "image_caption"
+                else:
+                    # Caption non-table images as before
+                    content_text = loop.run_until_complete(
+                        vision.caption_image(persistent_image_path)
+                    )
+                    element_type = ElementType.TEXT
+                    content_type = "image_caption"
+                    logger.info(
+                        f"[{document_id}] Caption generated ({len(content_text)} chars)"
+                    )
             finally:
                 loop.close()
 
-            logger.info(
-                f"[{document_id}] Caption generated ({len(caption)} chars)"
-            )
-
-            # Build synthetic ExtractedDocument from caption
+            # Build synthetic ExtractedDocument
             extracted = ExtractedDocument(
                 filename=doc["filename"],
                 file_type="image",
                 pages=[ExtractedPage(
                     page_number=1,
-                    text=caption,
+                    text=content_text,
                     elements=[ContentElement(
-                        element_type=ElementType.TEXT,
-                        text=caption,
+                        element_type=element_type,
+                        text=content_text,
                         metadata={
-                            "content_type": "image_caption",
+                            "content_type": content_type,
                             "original_image_path": persistent_image_path,
                         },
                     )],
                     metadata={
-                        "content_type": "image_caption",
+                        "content_type": content_type,
                         "original_image_path": persistent_image_path,
                     },
                 )],
             )
         else:
+            # For PDFs, optionally enable vision-enhanced table extraction
+            if settings.enable_vision_table_extraction and doc["file_type"] == "pdf":
+                from app.vision.base import get_vision_backend
+                extractor = DocumentExtractor(
+                    use_vision_tables=True,
+                    vision_backend=get_vision_backend(),
+                )
             extracted = extractor.extract(local_path, doc["file_type"])
 
         # Clean up temp file if we created one

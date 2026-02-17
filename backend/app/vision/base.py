@@ -31,6 +31,50 @@ class VisionBackend(ABC):
         ...
 
     @abstractmethod
+    async def extract_table(self, image_path: str) -> str:
+        """
+        Extract table structure from an image as a markdown pipe table.
+
+        Args:
+            image_path: Absolute path to the image file on disk.
+
+        Returns:
+            A markdown pipe-delimited table, or "NO_TABLE_FOUND" if no
+            table is detected in the image.
+        """
+        ...
+
+    @abstractmethod
+    async def classify_image(self, image_path: str) -> str:
+        """
+        Classify an image into a category.
+
+        Args:
+            image_path: Absolute path to the image file on disk.
+
+        Returns:
+            One of: table, chart, diagram, photo, screenshot, document, other
+        """
+        ...
+
+    @abstractmethod
+    async def extract_page(self, image_path: str) -> str:
+        """
+        Extract ALL content from a full document page image.
+
+        Used for scanned PDFs where the entire page is a raster image.
+        The VLM reproduces text, tables, and image descriptions in one pass.
+
+        Args:
+            image_path: Absolute path to the rendered page image.
+
+        Returns:
+            Full page content as structured text (markdown headings,
+            pipe-delimited tables, [Image: ...] descriptions).
+        """
+        ...
+
+    @abstractmethod
     async def visual_qa(self, image_path: str, question: str) -> str:
         """
         Answer a question about an image (Visual Question Answering).

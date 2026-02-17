@@ -158,6 +158,7 @@ class SemanticChunker:
         chunks: list[Chunk] = []
         chunk_index = start_index
         text_buffer: list[str] = []
+        current_section: str | None = None
 
         def _flush_text_buffer():
             nonlocal chunk_index
@@ -183,18 +184,22 @@ class SemanticChunker:
                             "page_number": page_number,
                             "chunk_index": chunk_index,
                             "element_type": ElementType.TEXT.value,
-                            "section_header": elements[0].metadata.get("section_header") if elements else None,
+                            "section_header": current_section,
                         },
                     )
                 )
                 chunk_index += 1
 
         for element in elements:
+            # Track the current section heading as we iterate
+            if element.element_type == ElementType.TITLE:
+                current_section = element.text
+
             if element.element_type == ElementType.TABLE:
                 # Flush any accumulated text first
                 _flush_text_buffer()
 
-                section = element.metadata.get("section_header")
+                section = element.metadata.get("section_header") or current_section
 
                 # Check if table is too large
                 if len(element.text) > MAX_TABLE_CHUNK_SIZE:
@@ -207,9 +212,15 @@ class SemanticChunker:
                 for table_text in sub_chunks:
                     if not table_text.strip():
                         continue
+
+                    # Prepend context so the table is self-describing
+                    context_prefix = ""
+                    if section:
+                        context_prefix = f"## {section}\n\n"
+
                     chunks.append(
                         Chunk(
-                            text=table_text,
+                            text=context_prefix + table_text,
                             document_id=document_id,
                             tenant_id=tenant_id,
                             page_number=page_number,

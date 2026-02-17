@@ -90,7 +90,7 @@ async def _decompose_query(state: AgentState) -> dict:
     try:
         client = genai.Client(api_key=settings.google_api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview",
             contents=f"""Analyze this query and determine if it requires multiple distinct steps to answer.
 
 Query: "{query}"
@@ -213,7 +213,7 @@ async def _reflect_on_answer(state: AgentState) -> dict:
     try:
         client = genai.Client(api_key=settings.google_api_key)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview",
             contents=f"""Evaluate if this answer adequately addresses the user's question.
 
 User question: "{user_query}"
@@ -226,7 +226,7 @@ Respond with exactly one word:
 - NO_DATA — if the documents genuinely don't contain the needed information
 
 One word only:""",
-            config=types.GenerateContentConfig(temperature=0, max_output_tokens=10),
+            config=types.GenerateContentConfig(temperature=0, max_output_tokens=20),
         )
 
         if not response.text:
@@ -238,7 +238,7 @@ One word only:""",
 
         current_count = state.get("reflection_count", 0)
 
-        if verdict == "INCOMPLETE" and current_count < 1:
+        if (verdict.startswith("INCOMPL") or verdict.startswith("INADEQU")) and current_count < 1:
             # Send agent back for another search attempt
             retry_hint = AIMessage(
                 content="Let me search more thoroughly to find additional details."
