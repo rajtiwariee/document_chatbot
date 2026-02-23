@@ -106,14 +106,54 @@ class GeminiVision(VisionBackend):
 
         image_part = self._load_image_part(image_path)
         prompt = (
-            "Extract ALL content from this document page image. "
-            "Reproduce everything visible:\n\n"
-            "- All text: reproduce paragraphs, headings, and lists exactly as written\n"
-            "- Tables: convert to markdown pipe-delimited format (| col1 | col2 |) with exact values\n"
-            "- Images/figures: describe them in [Image: ...] brackets\n"
-            "- Preserve the reading order from top to bottom\n"
-            "- Preserve headings hierarchy (use # for main headings, ## for subheadings)\n\n"
-            "Be thorough and exact. Reproduce all text verbatim, do not summarize."
+            "You are a precise document content extraction system. Extract EVERY piece of "
+            "content from this document page image. Missing even one row or section is a failure.\n\n"
+            "## Output Format\n\n"
+            "- **Headings**: Use # for main headings, ## for subheadings, exactly as they appear.\n"
+            "- **Paragraphs**: Reproduce text exactly as written.\n"
+            "- **Tables**: Convert ALL tabular data to markdown pipe-delimited tables.\n"
+            "  Example format:\n"
+            "  | Column A | Column B | Column C |\n"
+            "  | --- | --- | --- |\n"
+            "  | data 1 | data 2 | data 3 |\n"
+            "  | data 4 | data 5 | data 6 |\n\n"
+            "## Visual Element Rules\n\n"
+            "- **Data charts** (pie, bar, line, scatter): Write a tag like "
+            "[Chart: Title or description], then extract ALL data points as a markdown "
+            "pipe table — labels, values, percentages, units. Example:\n"
+            "  [Chart: Revenue Breakdown by Region]\n"
+            "  | Region | Revenue | Percentage |\n"
+            "  | --- | --- | --- |\n"
+            "  | North America | $4.5M | 45% |\n"
+            "  | Europe | $3.0M | 30% |\n\n"
+            "- **Flowcharts / process diagrams**: Write [Diagram: Title], then describe "
+            "each step as a numbered list with arrows showing flow:\n"
+            "  [Diagram: Order Processing Flow]\n"
+            "  1. Customer places order\n"
+            "  2. -> Payment validation\n"
+            "  3. -> Inventory check -> If out of stock: notify customer\n"
+            "  4. -> Ship order\n\n"
+            "- **Hierarchy / org charts**: Write [Diagram: Title], then use indented "
+            "nested lists to show the structure.\n"
+            "- **Other images** (logos, photos, decorative): Describe briefly in "
+            "[Image: ...] brackets.\n"
+            "- For ALL visual types: extract EVERY visible label, number, and text element. "
+            "Never skip data points.\n\n"
+            "## Table Extraction Rules\n\n"
+            "- Identify ALL tabular data — including price lists, comparison data, or "
+            "aligned columns — even if they lack visible grid lines.\n"
+            "- First, identify the column headers. Then place every data row into the correct columns.\n"
+            "- If the page has MULTIPLE tables, give each one its own heading (## Table Title) "
+            "before the pipe-delimited output.\n"
+            "- Data separated by dots, dashes, or whitespace alignment is tabular — "
+            "extract it as a pipe table, not as raw text.\n\n"
+            "## Critical Rules\n\n"
+            "- Start at the TOP and work to the BOTTOM. Do NOT stop until the entire page is done.\n"
+            "- Do NOT summarize, abbreviate, or skip repetitive rows. Every row matters.\n"
+            "- Do NOT say 'continued' or '...' — output the actual content.\n"
+            "- Reproduce all numbers, dates, and values exactly as shown.\n"
+            "- If a table has many rows (10, 20, 50+), you MUST include ALL of them.\n\n"
+            "Begin extraction now."
         )
 
         response = self.client.models.generate_content(
@@ -121,13 +161,29 @@ class GeminiVision(VisionBackend):
             contents=[prompt, image_part],
             config=types.GenerateContentConfig(
                 temperature=0.1,
-                max_output_tokens=8192,
+                max_output_tokens=30000,
             ),
         )
 
+        # Check finish reason for debugging
+        finish_reason = None
+        if response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+            if str(finish_reason) == "MAX_TOKENS":
+                logger.warning(
+                    "Gemini extract_page hit MAX_TOKENS for %s — output likely truncated",
+                    image_path,
+                )
+            elif str(finish_reason) not in ("STOP", "FinishReason.STOP", "0", "None"):
+                logger.warning(
+                    "Gemini extract_page unusual finish_reason=%s for %s",
+                    finish_reason, image_path,
+                )
+
         result = response.text.strip()
         logger.info(
-            "Gemini page extraction (%d chars) for %s", len(result), image_path,
+            "Gemini page extraction (%d chars, finish=%s) for %s",
+            len(result), finish_reason, image_path,
         )
         return result
 

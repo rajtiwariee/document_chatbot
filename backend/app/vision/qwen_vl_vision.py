@@ -64,11 +64,14 @@ class QwenVLVision(VisionBackend):
         messages: list[dict],
         max_tokens: int = 1024,
         temperature: float = 0.2,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         """
         Send a chat completion request to the Qwen-VL Vertex AI endpoint.
 
         Uses the OpenAI-compatible /v1/chat/completions format.
+
+        Returns:
+            Tuple of (content, finish_reason).
         """
         url = f"{self.endpoint}/v1/chat/completions"
         headers = {
@@ -89,7 +92,9 @@ class QwenVLVision(VisionBackend):
             response.raise_for_status()
 
         data = response.json()
-        return data["choices"][0]["message"]["content"].strip()
+        content = data["choices"][0]["message"]["content"].strip()
+        finish_reason = data["choices"][0].get("finish_reason")
+        return content, finish_reason
 
     async def caption_image(self, image_path: str) -> str:
         """Generate a detailed text caption using Qwen3-VL."""
@@ -106,7 +111,7 @@ class QwenVLVision(VisionBackend):
             }
         ]
 
-        caption = await self._call_endpoint(messages)
+        caption, _ = await self._call_endpoint(messages)
         logger.info(
             "Qwen-VL caption generated (%d chars) for %s",
             len(caption), image_path,
@@ -139,7 +144,7 @@ class QwenVLVision(VisionBackend):
             }
         ]
 
-        result = await self._call_endpoint(messages, max_tokens=5096, temperature=0.0)
+        result, _ = await self._call_endpoint(messages, max_tokens=5096, temperature=0.0)
         logger.info("Qwen-VL table extraction (%d chars) for %s", len(result), image_path)
         return result
 
@@ -149,14 +154,54 @@ class QwenVLVision(VisionBackend):
 
         data_url = self._image_to_data_url(image_path)
         prompt = (
-            "Extract ALL content from this document page image. "
-            "Reproduce everything visible:\n\n"
-            "- All text: reproduce paragraphs, headings, and lists exactly as written\n"
-            "- Tables: convert to markdown pipe-delimited format (| col1 | col2 |) with exact values\n"
-            "- Images/figures: describe them in [Image: ...] brackets\n"
-            "- Preserve the reading order from top to bottom\n"
-            "- Preserve headings hierarchy (use # for main headings, ## for subheadings)\n\n"
-            "Be thorough and exact. Reproduce all text verbatim, do not summarize."
+            "You are a precise document content extraction system. Extract EVERY piece of "
+            "content from this document page image. Missing even one row or section is a failure.\n\n"
+            "## Output Format\n\n"
+            "- **Headings**: Use # for main headings, ## for subheadings, exactly as they appear.\n"
+            "- **Paragraphs**: Reproduce text exactly as written.\n"
+            "- **Tables**: Convert ALL tabular data to markdown pipe-delimited tables.\n"
+            "  Example format:\n"
+            "  | Column A | Column B | Column C |\n"
+            "  | --- | --- | --- |\n"
+            "  | data 1 | data 2 | data 3 |\n"
+            "  | data 4 | data 5 | data 6 |\n\n"
+            "## Visual Element Rules\n\n"
+            "- **Data charts** (pie, bar, line, scatter): Write a tag like "
+            "[Chart: Title or description], then extract ALL data points as a markdown "
+            "pipe table — labels, values, percentages, units. Example:\n"
+            "  [Chart: Revenue Breakdown by Region]\n"
+            "  | Region | Revenue | Percentage |\n"
+            "  | --- | --- | --- |\n"
+            "  | North America | $4.5M | 45% |\n"
+            "  | Europe | $3.0M | 30% |\n\n"
+            "- **Flowcharts / process diagrams**: Write [Diagram: Title], then describe "
+            "each step as a numbered list with arrows showing flow:\n"
+            "  [Diagram: Order Processing Flow]\n"
+            "  1. Customer places order\n"
+            "  2. -> Payment validation\n"
+            "  3. -> Inventory check -> If out of stock: notify customer\n"
+            "  4. -> Ship order\n\n"
+            "- **Hierarchy / org charts**: Write [Diagram: Title], then use indented "
+            "nested lists to show the structure.\n"
+            "- **Other images** (logos, photos, decorative): Describe briefly in "
+            "[Image: ...] brackets.\n"
+            "- For ALL visual types: extract EVERY visible label, number, and text element. "
+            "Never skip data points.\n\n"
+            "## Table Extraction Rules\n\n"
+            "- Identify ALL tabular data — including price lists, comparison data, or "
+            "aligned columns — even if they lack visible grid lines.\n"
+            "- First, identify the column headers. Then place every data row into the correct columns.\n"
+            "- If the page has MULTIPLE tables, give each one its own heading (## Table Title) "
+            "before the pipe-delimited output.\n"
+            "- Data separated by dots, dashes, or whitespace alignment is tabular — "
+            "extract it as a pipe table, not as raw text.\n\n"
+            "## Critical Rules\n\n"
+            "- Start at the TOP and work to the BOTTOM. Do NOT stop until the entire page is done.\n"
+            "- Do NOT summarize, abbreviate, or skip repetitive rows. Every row matters.\n"
+            "- Do NOT say 'continued' or '...' — output the actual content.\n"
+            "- Reproduce all numbers, dates, and values exactly as shown.\n"
+            "- If a table has many rows (10, 20, 50+), you MUST include ALL of them.\n\n"
+            "Begin extraction now."
         )
 
         messages = [
@@ -169,8 +214,26 @@ class QwenVLVision(VisionBackend):
             }
         ]
 
-        result = await self._call_endpoint(messages, max_tokens=8192, temperature=0.1)
-        logger.info("Qwen-VL page extraction (%d chars) for %s", len(result), image_path)
+        result, finish_reason = await self._call_endpoint(
+            messages, max_tokens=30000, temperature=0.1,
+        )
+
+        # Check finish reason for debugging
+        if finish_reason == "length":
+            logger.warning(
+                "Qwen-VL extract_page hit token limit for %s — output likely truncated",
+                image_path,
+            )
+        elif finish_reason and finish_reason != "stop":
+            logger.warning(
+                "Qwen-VL extract_page unusual finish_reason=%s for %s",
+                finish_reason, image_path,
+            )
+
+        logger.info(
+            "Qwen-VL page extraction (%d chars, finish=%s) for %s",
+            len(result), finish_reason, image_path,
+        )
         return result
 
     async def classify_image(self, image_path: str) -> str:
@@ -194,7 +257,7 @@ class QwenVLVision(VisionBackend):
             }
         ]
 
-        result = await self._call_endpoint(messages, max_tokens=20, temperature=0.0)
+        result, _ = await self._call_endpoint(messages, max_tokens=20, temperature=0.0)
         category = result.strip().lower().rstrip(".")
         valid = {"table", "chart", "diagram", "photo", "screenshot", "document", "other"}
         if category not in valid:
@@ -224,6 +287,6 @@ class QwenVLVision(VisionBackend):
             }
         ]
 
-        answer = await self._call_endpoint(messages)
+        answer, _ = await self._call_endpoint(messages)
         logger.info("Qwen-VL VQA answer (%d chars)", len(answer))
         return answer

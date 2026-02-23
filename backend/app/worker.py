@@ -94,7 +94,8 @@ def process_document(self, document_id: str):
     3. Generate embeddings via Google Gemini
     4. Store vectors in Qdrant
 
-    This task is idempotent — re-running will overwrite previous results.
+    This task is idempotent — existing vectors for the document are deleted before
+    re-indexing, so retries produce the same final state without accumulating duplicates.
     """
     logger.info(f"Starting document processing: {document_id}")
 
@@ -241,6 +242,16 @@ def process_document(self, document_id: str):
         if settings.storage_backend == "gcs":
             os.unlink(local_path)
 
+        # ── Initialize artifact saver ─────────────────────────────────
+        saver = None
+        try:
+            from app.document_processing.artifact_saver import ProcessingArtifactSaver
+            saver = ProcessingArtifactSaver(doc["tenant_id"], document_id)
+            saver.save_extraction(extracted)
+            saver.save_tables(extracted)
+        except Exception as e:
+            logger.warning(f"[{document_id}] Failed to save extraction artifacts: {e}")
+
         if extracted.error:
             raise RuntimeError(f"Extraction failed: {extracted.error}")
 
@@ -259,6 +270,13 @@ def process_document(self, document_id: str):
 
         chunker = SemanticChunker(chunk_size=1000, chunk_overlap=200)
         chunks = chunker.chunk(extracted, document_id, doc["tenant_id"])
+
+        # ── Save chunk artifacts ─────────────────────────────────────
+        if saver:
+            try:
+                saver.save_chunks(chunks)
+            except Exception as e:
+                logger.warning(f"[{document_id}] Failed to save chunk artifacts: {e}")
 
         if not chunks:
             raise RuntimeError("No chunks produced from document text")
@@ -281,6 +299,8 @@ def process_document(self, document_id: str):
         from app.vector_store.store import TenantVectorStore
 
         vector_store = TenantVectorStore()
+        # Delete stale vectors from any previous run before re-indexing (ensures idempotency)
+        vector_store.delete_document_vectors(doc["tenant_id"], document_id)
         num_stored = vector_store.add_chunks(doc["tenant_id"], chunks, embeddings)
 
         logger.info(f"[{document_id}] Stored {num_stored} vectors")
@@ -292,6 +312,14 @@ def process_document(self, document_id: str):
             hybrid_searcher.invalidate_cache(doc["tenant_id"])
         except Exception as e:
             logger.warning(f"[{document_id}] Failed to invalidate BM25 cache: {e}")
+
+        # ── Save final artifacts (summary + report) ────────────────
+        if saver:
+            try:
+                saver.save_summary(extracted, chunks, num_stored)
+                saver.save_report(extracted, chunks, num_stored)
+            except Exception as e:
+                logger.warning(f"[{document_id}] Failed to save final artifacts: {e}")
 
         # ── Step 5: Mark as completed ────────────────────────────────
         update_document_status(

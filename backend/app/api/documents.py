@@ -14,6 +14,8 @@ from app.models.user import User
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.api.auth import get_current_user
 from app.middleware.file_storage import get_storage
+from app.vector_store.store import TenantVectorStore
+from app.vector_store.hybrid_search import HybridSearcher
 
 settings = get_settings()
 
@@ -177,6 +179,14 @@ async def delete_document(
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete vectors from Qdrant
+    vector_store = TenantVectorStore()
+    vector_store.delete_document_vectors(str(current_user.tenant_id), str(document_id))
+
+    # Invalidate BM25 cache so stale chunks don't appear in hybrid search
+    hybrid_searcher = HybridSearcher(vector_store=vector_store)
+    hybrid_searcher.invalidate_cache(str(current_user.tenant_id))
 
     # Delete the file from storage backend
     if document.file_path:

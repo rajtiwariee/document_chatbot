@@ -17,49 +17,60 @@ logger = logging.getLogger(__name__)
 _DIGITAL_TEXT_THRESHOLD = 50
 
 
-def detect_pdf_type(pdf_path: str) -> tuple[str, dict[int, str]]:
+def analyze_pages(pdf_path: str) -> list[dict]:
     """
-    Classify a PDF as "scanned", "digital", or "mixed".
+    Analyze each page to decide VLM vs text extraction.
 
-    Inspects every page:
-    - If extractable text > threshold → page is digital.
-    - If little/no text but raster images present → page is scanned.
+    For each page:
+    - If it has meaningful images, tables, OR very little extractable text → VLM.
+    - Otherwise → text extraction with PyMuPDF.
 
     Returns:
-        Tuple of (overall_type, page_types) where:
-        - overall_type: "scanned", "digital", or "mixed"
-        - page_types: dict mapping 1-based page number to "scanned" or "digital"
+        List of dicts (one per page):
+        {"page_num": 1, "has_images": True, "has_tables": False,
+         "text_len": 234, "method": "vlm"|"text"}
     """
     doc = fitz.open(pdf_path)
+    results = []
     try:
-        digital_count = 0
-        scanned_count = 0
-        page_types: dict[int, str] = {}
-
-        for page_idx, page in enumerate(doc):
-            page_num = page_idx + 1
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
             text = page.get_text("text").strip()
-            if len(text) > _DIGITAL_TEXT_THRESHOLD:
-                digital_count += 1
-                page_types[page_num] = "digital"
-            elif page.get_images():
-                scanned_count += 1
-                page_types[page_num] = "scanned"
-            else:
-                # Blank or near-blank page with no images — treat as digital
-                digital_count += 1
-                page_types[page_num] = "digital"
 
-        total = digital_count + scanned_count
-        if total == 0:
-            return "digital", page_types
-        if scanned_count == total:
-            return "scanned", page_types
-        if digital_count == total:
-            return "digital", page_types
-        return "mixed", page_types
+            # Check for meaningful images (not tiny icons/decorations)
+            has_images = False
+            for img_info in page.get_images(full=True):
+                try:
+                    img_meta = doc.extract_image(img_info[0])
+                    w = img_meta.get("width", 0)
+                    h = img_meta.get("height", 0)
+                    if w >= 50 and h >= 50 and w * h >= 10_000:
+                        has_images = True
+                        break
+                except Exception:
+                    continue
+
+            # Check for tables using PyMuPDF's built-in table detection
+            has_tables = False
+            try:
+                tables = page.find_tables()
+                has_tables = len(tables.tables) > 0
+            except Exception:
+                pass
+
+            # Decision: images, tables, or very little text → VLM
+            method = "vlm" if has_images or has_tables or len(text) < _DIGITAL_TEXT_THRESHOLD else "text"
+
+            results.append({
+                "page_num": page_idx + 1,
+                "has_images": has_images,
+                "has_tables": has_tables,
+                "text_len": len(text),
+                "method": method,
+            })
     finally:
         doc.close()
+    return results
 
 
 def extract_pymupdf_image_to_file(doc: fitz.Document, xref: int) -> str | None:

@@ -30,14 +30,14 @@ class Settings(BaseSettings):
     
     # Google Gemini
     google_api_key: str = os.getenv("GOOGLE_API_KEY")
-    gemini_model: str = "gemini-3-flash-preview"
+    gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")  # Default to a Gemini model
     embedding_model: str = "gemini-embedding-001"
     embedding_dimensions: int = 3072  # gemini-embedding-001
     enable_reranking: bool = True
 
     # Vision Backend (for multimodal RAG image captioning & VQA)
-    vision_backend: str = "gemini"  # "gemini" or "qwen_vl"
-    vision_model: str = "gemini-3-flash-preview"  # Gemini model or "qwen3-vl-8b"
+    vision_backend: str = os.getenv("VISION_BACKEND", "gemini")  # "gemini" or "qwen_vl"
+    vision_model: str = os.getenv("VISION_MODEL", "gemini-3-flash-preview")  # Gemini model or "qwen3-vl-8b"
     qwen_vl_endpoint: str = ""  # Vertex AI endpoint URL for Qwen-VL
     qwen_vl_api_key: str = ""  # API key/token for Qwen-VL endpoint
     image_storage_dir: str = "./uploads/images"  # Persistent image storage
