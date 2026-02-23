@@ -26,8 +26,8 @@ export function ChatInterface({ conversationId, onConversationCreated }: ChatInt
   const loadConversation = async (id: string) => {
     setIsLoading(true);
     try {
-      const data = await chat.getConversation(id);
-      setMessages(data.messages);
+      const messages = await chat.getConversationMessages(id);
+      setMessages(messages);
     } catch (error) {
       console.error("Failed to load conversation", error);
     } finally {

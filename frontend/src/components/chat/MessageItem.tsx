@@ -1,9 +1,27 @@
+import { useState, useEffect } from 'react';
 import { Avatar } from "../ui/Avatar";
 import { cn } from "../../lib/utils";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { User, Bot, FileText, FileSpreadsheet } from "lucide-react";
 import type { ChatAttachment } from "../../types";
+import { client } from "../../api/client";
+
+function AuthenticatedImage({ url, alt, className }: { url: string; alt: string; className?: string }) {
+  const [blobSrc, setBlobSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    client.get(url, { responseType: 'blob' })
+      .then(res => { if (active) setBlobSrc(URL.createObjectURL(res.data)); })
+      .catch(() => {});
+    return () => {
+      active = false;
+      if (blobSrc) URL.revokeObjectURL(blobSrc);
+    };
+  }, [url]);
+  if (!blobSrc) return <div className="h-20 w-20 rounded-lg bg-muted animate-pulse" />;
+  return <img src={blobSrc} alt={alt} className={className} />;
+}
 
 interface MessageItemProps {
   role: 'user' | 'assistant';
@@ -33,31 +51,42 @@ export function MessageItem({ role, content, attachments }: MessageItemProps) {
         {/* Render attachments above message text */}
         {attachments && attachments.length > 0 && (
           <div className="flex flex-wrap gap-2 mb-1">
-            {attachments.map(att => (
-              <div key={att.id}>
-                {att.type === 'image' && att.preview ? (
-                  <img
-                    src={att.preview}
-                    alt={att.file.name}
-                    className="max-w-[280px] rounded-lg border border-border/30"
-                  />
-                ) : (
-                  <div className={cn(
-                    "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs",
-                    isUser
-                      ? "bg-primary-foreground/10 text-primary-foreground"
-                      : "bg-muted text-muted-foreground"
-                  )}>
-                    {att.type === 'spreadsheet' ? (
-                      <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+            {attachments.map(att => {
+              const displayName = att.filename ?? att.file?.name ?? 'attachment';
+              return (
+                <div key={att.id}>
+                  {att.type === 'image' && att.preview ? (
+                    att.useAuthFetch ? (
+                      <AuthenticatedImage
+                        url={att.preview}
+                        alt={displayName}
+                        className="max-w-[280px] rounded-lg border border-border/30"
+                      />
                     ) : (
-                      <FileText className="h-3.5 w-3.5 shrink-0" />
-                    )}
-                    <span className="max-w-[160px] truncate">{att.file.name}</span>
-                  </div>
-                )}
-              </div>
-            ))}
+                      <img
+                        src={att.preview}
+                        alt={displayName}
+                        className="max-w-[280px] rounded-lg border border-border/30"
+                      />
+                    )
+                  ) : (
+                    <div className={cn(
+                      "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs",
+                      isUser
+                        ? "bg-primary-foreground/10 text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    )}>
+                      {att.type === 'spreadsheet' ? (
+                        <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                      ) : (
+                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                      <span className="max-w-[160px] truncate">{displayName}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         )}
 

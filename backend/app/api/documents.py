@@ -5,6 +5,7 @@ Fully tenant-isolated: all queries and file operations are scoped to the user's 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -161,6 +162,49 @@ async def get_document(
         "indexed_at": document.indexed_at.isoformat() if document.indexed_at else None,
         "error_message": document.error_message,
     }
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: UUID,
+    inline: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Serve the raw file for a document.
+    ?inline=false (default) → Content-Disposition: attachment  (browser download)
+    ?inline=true            → Content-Disposition: inline      (open in browser tab)
+    """
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .where(Document.tenant_id == current_user.tenant_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.file_path:
+        raise HTTPException(status_code=404, detail="File not available")
+
+    storage = get_storage()
+    try:
+        content = storage.read(current_user.tenant_id, document.file_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found in storage")
+
+    if inline:
+        disposition = "inline"
+    else:
+        safe_name = document.original_filename.replace('"', '_')
+        disposition = f'attachment; filename="{safe_name}"'
+
+    return Response(
+        content=content,
+        media_type=document.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -30,6 +30,16 @@ export const documents = {
     return response.data;
   },
 
+  download: async (id: string, inline = false): Promise<{ blob: Blob; filename: string }> => {
+    const response = await client.get(
+      `/documents/${id}/download${inline ? '?inline=true' : ''}`,
+      { responseType: 'blob' },
+    );
+    const cd = (response.headers['content-disposition'] as string) || '';
+    const match = cd.match(/filename="([^"]+)"/);
+    return { blob: response.data, filename: match?.[1] ?? 'document' };
+  },
+
   delete: async (id: string): Promise<void> => {
     await client.delete(`/documents/${id}`);
   }

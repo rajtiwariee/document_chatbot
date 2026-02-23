@@ -53,42 +53,46 @@ class JSONFormatter(logging.Formatter):
 
 
 class ReadableFormatter(logging.Formatter):
-    """Human-readable formatter for development."""
+    """Human-readable C-style formatter for development.
+
+    Format:
+        HH:MM:SS.mmm  [LEVEL]  module.path:line  func()  message
+    Example:
+        13:54:36.480  [INFO ]  app.api.auth:140  login()  User logged in
+    """
 
     COLORS = {
-        "DEBUG": "\033[36m",      # Cyan
-        "INFO": "\033[32m",       # Green
-        "WARNING": "\033[33m",    # Yellow
-        "ERROR": "\033[31m",      # Red
-        "CRITICAL": "\033[1;31m", # Bold Red
+        "DEBUG":    "\033[36m",      # Cyan
+        "INFO":     "\033[32m",      # Green
+        "WARNING":  "\033[33m",      # Yellow
+        "ERROR":    "\033[31m",      # Red
+        "CRITICAL": "\033[1;31m",    # Bold Red
     }
     RESET = "\033[0m"
+    DIM   = "\033[90m"
 
     def format(self, record: logging.LogRecord) -> str:
-        color = self.COLORS.get(record.levelname, self.RESET)
-        timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
-
-        level = f"{color}{record.levelname:8s}{self.RESET}"
-        # Shorten logger name: app.document_processing.extractor -> extractor
-        short_name = record.name.rsplit(".", 1)[-1] if "." in record.name else record.name
-        location = f"\033[90m{short_name}:{record.funcName}:{record.lineno}\033[0m"
-        message = record.getMessage()
+        color  = self.COLORS.get(record.levelname, self.RESET)
+        ts     = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        level  = f"{color}[{record.levelname:<5}]{self.RESET}"
+        source = f"{self.DIM}{record.name}:{record.lineno}{self.RESET}"
+        func   = f"{self.DIM}{record.funcName}(){self.RESET}"
+        msg    = record.getMessage()
 
         extras = []
         for attr in ("tenant_id", "user_id", "document_id"):
             val = getattr(record, attr, None)
             if val is not None:
-                # Shorten UUIDs for readability
                 short = str(val)[:8] if len(str(val)) > 8 else str(val)
                 extras.append(f"{attr}={short}")
-        extra_str = f" \033[90m[{', '.join(extras)}]\033[0m" if extras else ""
+        extra_str = f"  {self.DIM}[{', '.join(extras)}]{self.RESET}" if extras else ""
 
-        formatted = f"{timestamp} {level} {location} {message}{extra_str}"
+        line = f"{ts}  {level}  {source}  {func}  {msg}{extra_str}"
 
         if record.exc_info and record.exc_info[1]:
-            formatted += "\n" + self.formatException(record.exc_info)
+            line += "\n" + self.formatException(record.exc_info)
 
-        return formatted
+        return line
 
 
 def setup_logging() -> None:

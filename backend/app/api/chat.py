@@ -5,13 +5,16 @@ Provides endpoints for chatting with the LangGraph ReAct agent,
 streaming responses, and managing conversation history.
 Supports both JSON and multipart/form-data (with file attachments).
 """
+import base64 as _b64
 import json
 import logging
+import os
 import re
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from starlette.datastructures import UploadFile as StarletteUploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +22,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from app.config import get_settings
 from app.database import get_db
+from app.middleware.file_storage import get_storage
 from app.models.user import User
 from app.models.conversation import Conversation, Message
 from app.api.auth import get_current_user
@@ -145,12 +149,76 @@ def _build_human_message(
     return HumanMessage(content=content_blocks)
 
 
-def _get_attachment_suffix(attachment_ctx: AttachmentContext | None) -> str:
-    """Build a suffix like ' [Attached: file1.csv, photo.png]' for DB storage."""
-    if not attachment_ctx or not attachment_ctx.attachments:
-        return ""
-    names = [a.filename for a in attachment_ctx.attachments]
-    return f" [Attached: {', '.join(names)}]"
+def _build_attachment_db_records(
+    ctx: AttachmentContext, tenant_id: uuid.UUID
+) -> list[dict]:
+    """
+    Persist chat attachments and return JSONB-ready metadata.
+    - local backend: stores base64 bytes inline in the returned dict
+    - gcs backend: uploads to GCS, stores blob path in the returned dict
+    """
+    if not ctx or not ctx.attachments:
+        return []
+
+    settings = get_settings()
+    is_gcs = getattr(settings, "storage_backend", "local") == "gcs"
+    storage = get_storage() if is_gcs else None
+
+    records = []
+    for att in ctx.attachments:
+        temp_path = os.path.join(ctx.temp_dir, f"{att.attachment_id}_{att.filename}")
+        try:
+            with open(temp_path, "rb") as f:
+                raw_bytes = f.read()
+
+            record = {
+                "id": att.attachment_id,
+                "filename": att.filename,
+                "mime_type": att.mime_type or "application/octet-stream",
+            }
+
+            if is_gcs:
+                gcs_path = storage.save(tenant_id, att.filename, raw_bytes)
+                record["gcs_path"] = gcs_path
+            else:
+                record["content_b64"] = _b64.b64encode(raw_bytes).decode("utf-8")
+
+            records.append(record)
+        except Exception as e:
+            logger.error(f"Failed to persist attachment {att.filename}: {e}")
+
+    return records
+
+
+def _serialize_attachments_for_response(
+    attachments: list | None, message_id: str
+) -> list[dict]:
+    """
+    Returns attachment metadata shaped for the frontend.
+    - local: embeds base64 data URL directly (no extra fetch needed)
+    - gcs: returns URL to the backend proxy endpoint
+    """
+    if not attachments:
+        return []
+    result = []
+    for att in attachments:
+        mime = att.get("mime_type", "")
+        is_image = mime.startswith("image/")
+        entry = {
+            "id": att["id"],
+            "filename": att["filename"],
+            "mime_type": mime,
+        }
+        if is_image:
+            if "content_b64" in att:
+                entry["data_url"] = f"data:{mime};base64,{att['content_b64']}"
+            elif "gcs_path" in att:
+                entry["url"] = (
+                    f"/api/chat/attachments"
+                    f"?message_id={message_id}&attachment_id={att['id']}"
+                )
+        result.append(entry)
+    return result
 
 
 def _get_attachment_ids(attachment_ctx: AttachmentContext | None) -> list[str]:
@@ -250,16 +318,21 @@ async def _handle_chat(
             db, current_user, conversation_id, message,
         )
 
-        # Save user message (text + attachment suffix for DB)
+        # Save user message
         msg_count = len(history_messages)
-        db_content = message + _get_attachment_suffix(attachment_ctx)
         user_msg = Message(
             conversation_id=conversation.id,
             role="user",
-            content=db_content,
+            content=message,
             sequence=msg_count,
         )
         db.add(user_msg)
+        await db.flush()
+        await db.refresh(user_msg)
+
+        if attachment_ctx:
+            records = _build_attachment_db_records(attachment_ctx, current_user.tenant_id)
+            user_msg.attachments = records or None
 
         # Build agent state
         human_msg = _build_human_message(message, attachment_ctx)
@@ -320,15 +393,20 @@ async def _handle_chat_stream(
     )
 
     msg_count = len(history_messages)
-    db_content = message + _get_attachment_suffix(attachment_ctx)
     user_msg = Message(
         conversation_id=conversation.id,
         role="user",
-        content=db_content,
+        content=message,
         sequence=msg_count,
     )
     db.add(user_msg)
     await db.flush()
+    await db.refresh(user_msg)
+
+    # Persist attachments before generator so temp files still exist
+    if attachment_ctx:
+        records = _build_attachment_db_records(attachment_ctx, current_user.tenant_id)
+        user_msg.attachments = records or None
 
     human_msg = _build_human_message(message, attachment_ctx)
     all_messages = history_messages + [human_msg]
@@ -498,10 +576,56 @@ async def get_conversation(
                 "content": msg.content,
                 "sources": msg.sources or [],
                 "created_at": msg.created_at.isoformat() if msg.created_at else None,
+                "attachments": _serialize_attachments_for_response(
+                    msg.attachments, str(msg.id)
+                ),
             }
             for msg in messages
         ],
     }
+
+
+@router.get("/attachments")
+async def serve_attachment(
+    message_id: str,
+    attachment_id: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Serve a chat attachment. Tenant-isolated via DB ownership check."""
+    result = await db.execute(
+        select(Message)
+        .join(Conversation, Message.conversation_id == Conversation.id)
+        .where(
+            Message.id == uuid.UUID(message_id),
+            Conversation.tenant_id == current_user.tenant_id,
+            Conversation.user_id == current_user.id,
+        )
+    )
+    msg = result.scalar_one_or_none()
+    if not msg:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    att_meta = next(
+        (a for a in (msg.attachments or []) if a["id"] == attachment_id), None
+    )
+    if not att_meta:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    if "content_b64" in att_meta:
+        content = _b64.b64decode(att_meta["content_b64"])
+    else:
+        storage = get_storage()
+        try:
+            content = storage.read(current_user.tenant_id, att_meta["gcs_path"])
+        except Exception:
+            raise HTTPException(status_code=404, detail="File not found")
+
+    return Response(
+        content=content,
+        media_type=att_meta.get("mime_type", "application/octet-stream"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.delete("/conversations/{conversation_id}", status_code=204)

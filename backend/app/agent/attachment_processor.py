@@ -73,6 +73,7 @@ class ProcessedAttachment:
     attachment_id: str
     filename: str
     category: str  # "image", "document", "spreadsheet"
+    mime_type: str | None = None
     image_data_url: str | None = None
     extracted_text: str | None = None
     spreadsheet_summary: str | None = None
@@ -134,6 +135,7 @@ async def process_attachments(files: list[UploadFile]) -> AttachmentContext:
             attachment_id=att_id,
             filename=filename,
             category=category,
+            mime_type=mime,
         )
 
         try:

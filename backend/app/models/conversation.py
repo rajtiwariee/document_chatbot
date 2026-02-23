@@ -45,6 +45,7 @@ class Message(Base):
     sources = Column(JSON, default=list)  # List of source citations
     sequence = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
+    attachments = Column(JSON, nullable=True, default=None)
 
     # Relationships
     conversation = relationship("Conversation", back_populates="messages")
