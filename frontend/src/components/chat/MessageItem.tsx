@@ -1,15 +1,35 @@
+import { useState, useEffect } from 'react';
 import { Avatar } from "../ui/Avatar";
 import { cn } from "../../lib/utils";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { User, Bot } from "lucide-react";
+import { User, Bot, FileText, FileSpreadsheet } from "lucide-react";
+import type { ChatAttachment } from "../../types";
+import { client } from "../../api/client";
+
+function AuthenticatedImage({ url, alt, className }: { url: string; alt: string; className?: string }) {
+  const [blobSrc, setBlobSrc] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    client.get(url, { responseType: 'blob' })
+      .then(res => { if (active) setBlobSrc(URL.createObjectURL(res.data)); })
+      .catch(() => {});
+    return () => {
+      active = false;
+      if (blobSrc) URL.revokeObjectURL(blobSrc);
+    };
+  }, [url]);
+  if (!blobSrc) return <div className="h-20 w-20 rounded-lg bg-muted animate-pulse" />;
+  return <img src={blobSrc} alt={alt} className={className} />;
+}
 
 interface MessageItemProps {
   role: 'user' | 'assistant';
   content: string;
+  attachments?: ChatAttachment[];
 }
 
-export function MessageItem({ role, content }: MessageItemProps) {
+export function MessageItem({ role, content, attachments }: MessageItemProps) {
   const isUser = role === 'user';
 
   return (
@@ -24,43 +44,86 @@ export function MessageItem({ role, content }: MessageItemProps) {
 
       <div className={cn(
         "flex max-w-[85%] flex-col gap-2 rounded-2xl px-5 py-3.5 text-sm shadow-sm leading-relaxed",
-        isUser 
-          ? "bg-primary text-primary-foreground rounded-br-sm" 
+        isUser
+          ? "bg-primary text-primary-foreground rounded-br-sm"
           : "bg-card border border-border text-card-foreground rounded-bl-sm"
       )}>
-        <ReactMarkdown 
-          remarkPlugins={[remarkGfm]}
-          components={{
-            // Style markdown elements to match the theme
-            p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
-            a: ({node, ...props}) => <a className="underline hover:text-primary/80 font-medium" {...props} />,
-            ul: ({node, ...props}) => <ul className="mb-3 list-disc pl-4 space-y-1" {...props} />,
-            ol: ({node, ...props}) => <ol className="mb-3 list-decimal pl-4 space-y-1" {...props} />,
-            h1: ({node, ...props}) => <h1 className="text-lg font-bold my-2" {...props} />,
-            h2: ({node, ...props}) => <h2 className="text-base font-semibold my-2" {...props} />,
-            h3: ({node, ...props}) => <h3 className="text-sm font-semibold my-1" {...props} />,
-            blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-primary/20 pl-4 py-1 italic my-2 text-muted-foreground" {...props} />,
-            code: ({node, className, children, ...props}) => {
-                const match = /language-(\w+)/.exec(className || '')
-                return match ? (
-                  <pre className="rounded-lg bg-zinc-950 p-3 overflow-x-auto text-xs my-3 text-zinc-50 border border-zinc-800">
-                    <code className={className} {...props}>
+        {/* Render attachments above message text */}
+        {attachments && attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mb-1">
+            {attachments.map(att => {
+              const displayName = att.filename ?? att.file?.name ?? 'attachment';
+              return (
+                <div key={att.id}>
+                  {att.type === 'image' && att.preview ? (
+                    att.useAuthFetch ? (
+                      <AuthenticatedImage
+                        url={att.preview}
+                        alt={displayName}
+                        className="max-w-[280px] rounded-lg border border-border/30"
+                      />
+                    ) : (
+                      <img
+                        src={att.preview}
+                        alt={displayName}
+                        className="max-w-[280px] rounded-lg border border-border/30"
+                      />
+                    )
+                  ) : (
+                    <div className={cn(
+                      "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs",
+                      isUser
+                        ? "bg-primary-foreground/10 text-primary-foreground"
+                        : "bg-muted text-muted-foreground"
+                    )}>
+                      {att.type === 'spreadsheet' ? (
+                        <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+                      ) : (
+                        <FileText className="h-3.5 w-3.5 shrink-0" />
+                      )}
+                      <span className="max-w-[160px] truncate">{displayName}</span>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {content && (
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              p: ({node, ...props}) => <p className="mb-2 last:mb-0" {...props} />,
+              a: ({node, ...props}) => <a className="underline hover:text-primary/80 font-medium" {...props} />,
+              ul: ({node, ...props}) => <ul className="mb-3 list-disc pl-4 space-y-1" {...props} />,
+              ol: ({node, ...props}) => <ol className="mb-3 list-decimal pl-4 space-y-1" {...props} />,
+              h1: ({node, ...props}) => <h1 className="text-lg font-bold my-2" {...props} />,
+              h2: ({node, ...props}) => <h2 className="text-base font-semibold my-2" {...props} />,
+              h3: ({node, ...props}) => <h3 className="text-sm font-semibold my-1" {...props} />,
+              blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-primary/20 pl-4 py-1 italic my-2 text-muted-foreground" {...props} />,
+              code: ({node, className, children, ...props}) => {
+                  const match = /language-(\w+)/.exec(className || '')
+                  return match ? (
+                    <pre className="rounded-lg bg-zinc-950 p-3 overflow-x-auto text-xs my-3 text-zinc-50 border border-zinc-800">
+                      <code className={className} {...props}>
+                        {children}
+                      </code>
+                    </pre>
+                  ) : (
+                    <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs font-mono border border-border/50" {...props}>
                       {children}
                     </code>
-                  </pre>
-                ) : (
-                  <code className="rounded-md bg-muted px-1.5 py-0.5 text-xs font-mono border border-border/50" {...props}>
-                    {children}
-                  </code>
-                )
-            },
-            table: ({node, ...props}) => <div className="overflow-x-auto my-3 rounded-lg border border-border"><table className="w-full text-sm" {...props} /></div>,
-            th: ({node, ...props}) => <th className="bg-muted/50 px-3 py-2 text-left font-semibold border-b border-border" {...props} />,
-            td: ({node, ...props}) => <td className="px-3 py-2 border-b border-border last:border-0" {...props} />,
-          }}
-        >
-          {content}
-        </ReactMarkdown>
+                  )
+              },
+              table: ({node, ...props}) => <div className="overflow-x-auto my-3 rounded-lg border border-border"><table className="w-full text-sm" {...props} /></div>,
+              th: ({node, ...props}) => <th className="bg-muted/50 px-3 py-2 text-left font-semibold border-b border-border" {...props} />,
+              td: ({node, ...props}) => <td className="px-3 py-2 border-b border-border last:border-0" {...props} />,
+            }}
+          >
+            {content}
+          </ReactMarkdown>
+        )}
       </div>
 
       {isUser && (

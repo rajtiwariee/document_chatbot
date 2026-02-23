@@ -12,6 +12,15 @@ export interface AuthResponse {
   user: User;
 }
 
+export interface ChatAttachment {
+  id: string;
+  file?: File;          // present for new uploads, absent for history
+  preview?: string;     // blob URL (new) | data URL (local history) | API URL (GCS history)
+  type: 'image' | 'document' | 'spreadsheet';
+  filename?: string;    // used when file is absent (history case)
+  useAuthFetch?: boolean; // true when preview is an API URL (GCS case, needs auth header)
+}
+
 export interface ChatMessage {
   id?: string;
   role: 'user' | 'assistant';
@@ -19,6 +28,7 @@ export interface ChatMessage {
   timestamp?: number;
   created_at?: string;
   sources?: any[];
+  attachments?: ChatAttachment[];
 }
 
 export interface ConversationSummary {

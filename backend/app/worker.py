@@ -94,7 +94,8 @@ def process_document(self, document_id: str):
     3. Generate embeddings via Google Gemini
     4. Store vectors in Qdrant
 
-    This task is idempotent — re-running will overwrite previous results.
+    This task is idempotent — existing vectors for the document are deleted before
+    re-indexing, so retries produce the same final state without accumulating duplicates.
     """
     logger.info(f"Starting document processing: {document_id}")
 
@@ -142,11 +143,114 @@ def process_document(self, document_id: str):
         from app.document_processing.extractor import DocumentExtractor
 
         extractor = DocumentExtractor()
-        extracted = extractor.extract(local_path, doc["file_type"])
+
+        # ── Image handling: caption via vision backend ────────────
+        IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+        _, file_ext = os.path.splitext(doc["filename"])
+
+        if file_ext.lower() in IMAGE_EXTENSIONS:
+            logger.info(f"[{document_id}] Image detected — classifying with vision backend")
+
+            import asyncio
+            import shutil
+            from app.vision.base import get_vision_backend
+            from app.document_processing.extractor import (
+                ExtractedDocument, ExtractedPage, ContentElement, ElementType
+            )
+
+            # Persist original image to image_storage_dir
+            os.makedirs(settings.image_storage_dir, exist_ok=True)
+            persistent_image_path = os.path.join(
+                settings.image_storage_dir, f"{document_id}{file_ext}"
+            )
+            shutil.copy2(local_path, persistent_image_path)
+            logger.info(f"[{document_id}] Image saved to {persistent_image_path}")
+
+            vision = get_vision_backend()
+            loop = asyncio.new_event_loop()
+            try:
+                # Classify the image first
+                category = loop.run_until_complete(
+                    vision.classify_image(persistent_image_path)
+                )
+                logger.info(f"[{document_id}] Image classified as '{category}'")
+
+                if category == "table":
+                    # Extract table structure as markdown
+                    table_md = loop.run_until_complete(
+                        vision.extract_table(persistent_image_path)
+                    )
+                    if table_md and table_md.strip() != "NO_TABLE_FOUND":
+                        content_text = table_md
+                        element_type = ElementType.TABLE
+                        content_type = "image_table"
+                        logger.info(
+                            f"[{document_id}] Table extracted ({len(table_md)} chars)"
+                        )
+                    else:
+                        # Fallback to caption if table extraction fails
+                        content_text = loop.run_until_complete(
+                            vision.caption_image(persistent_image_path)
+                        )
+                        element_type = ElementType.TEXT
+                        content_type = "image_caption"
+                else:
+                    # Caption non-table images as before
+                    content_text = loop.run_until_complete(
+                        vision.caption_image(persistent_image_path)
+                    )
+                    element_type = ElementType.TEXT
+                    content_type = "image_caption"
+                    logger.info(
+                        f"[{document_id}] Caption generated ({len(content_text)} chars)"
+                    )
+            finally:
+                loop.close()
+
+            # Build synthetic ExtractedDocument
+            extracted = ExtractedDocument(
+                filename=doc["filename"],
+                file_type="image",
+                pages=[ExtractedPage(
+                    page_number=1,
+                    text=content_text,
+                    elements=[ContentElement(
+                        element_type=element_type,
+                        text=content_text,
+                        metadata={
+                            "content_type": content_type,
+                            "original_image_path": persistent_image_path,
+                        },
+                    )],
+                    metadata={
+                        "content_type": content_type,
+                        "original_image_path": persistent_image_path,
+                    },
+                )],
+            )
+        else:
+            # For PDFs, optionally enable vision-enhanced table extraction
+            if settings.enable_vision_table_extraction and doc["file_type"] == "pdf":
+                from app.vision.base import get_vision_backend
+                extractor = DocumentExtractor(
+                    use_vision_tables=True,
+                    vision_backend=get_vision_backend(),
+                )
+            extracted = extractor.extract(local_path, doc["file_type"])
 
         # Clean up temp file if we created one
         if settings.storage_backend == "gcs":
             os.unlink(local_path)
+
+        # ── Initialize artifact saver ─────────────────────────────────
+        saver = None
+        try:
+            from app.document_processing.artifact_saver import ProcessingArtifactSaver
+            saver = ProcessingArtifactSaver(doc["tenant_id"], document_id)
+            saver.save_extraction(extracted)
+            saver.save_tables(extracted)
+        except Exception as e:
+            logger.warning(f"[{document_id}] Failed to save extraction artifacts: {e}")
 
         if extracted.error:
             raise RuntimeError(f"Extraction failed: {extracted.error}")
@@ -166,6 +270,13 @@ def process_document(self, document_id: str):
 
         chunker = SemanticChunker(chunk_size=1000, chunk_overlap=200)
         chunks = chunker.chunk(extracted, document_id, doc["tenant_id"])
+
+        # ── Save chunk artifacts ─────────────────────────────────────
+        if saver:
+            try:
+                saver.save_chunks(chunks)
+            except Exception as e:
+                logger.warning(f"[{document_id}] Failed to save chunk artifacts: {e}")
 
         if not chunks:
             raise RuntimeError("No chunks produced from document text")
@@ -188,9 +299,27 @@ def process_document(self, document_id: str):
         from app.vector_store.store import TenantVectorStore
 
         vector_store = TenantVectorStore()
+        # Delete stale vectors from any previous run before re-indexing (ensures idempotency)
+        vector_store.delete_document_vectors(doc["tenant_id"], document_id)
         num_stored = vector_store.add_chunks(doc["tenant_id"], chunks, embeddings)
 
         logger.info(f"[{document_id}] Stored {num_stored} vectors")
+
+        # ── Step 4b: Invalidate BM25 cache ───────────────────────────
+        try:
+            from app.vector_store.hybrid_search import HybridSearcher
+            hybrid_searcher = HybridSearcher(vector_store=vector_store)
+            hybrid_searcher.invalidate_cache(doc["tenant_id"])
+        except Exception as e:
+            logger.warning(f"[{document_id}] Failed to invalidate BM25 cache: {e}")
+
+        # ── Save final artifacts (summary + report) ────────────────
+        if saver:
+            try:
+                saver.save_summary(extracted, chunks, num_stored)
+                saver.save_report(extracted, chunks, num_stored)
+            except Exception as e:
+                logger.warning(f"[{document_id}] Failed to save final artifacts: {e}")
 
         # ── Step 5: Mark as completed ────────────────────────────────
         update_document_status(

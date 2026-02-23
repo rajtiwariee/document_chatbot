@@ -12,7 +12,10 @@ task.todo
 # IDE
 .vscode/
 .idea/
-
+processing_artifacts/
+claude.md
+.933
+logs/*.json
 # Node
 node_modules/
 dist/

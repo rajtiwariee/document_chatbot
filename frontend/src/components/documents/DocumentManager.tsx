@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { Upload, FileText, Trash2, X, AlertCircle, Loader2, FolderOpen, Search, ChevronLeft, ChevronRight, ArrowUpDown } from 'lucide-react';
+import { Upload, FileText, Trash2, X, AlertCircle, Loader2, FolderOpen, Search, ChevronLeft, ChevronRight, ArrowUpDown, Download, Eye } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { cn } from '../../lib/utils';
 import { documents } from '../../api/documents';
@@ -73,12 +73,43 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this document? This cannot be undone.")) return;
-    
+
     try {
       await documents.delete(id);
       setDocs(prev => prev.filter(d => d.id !== id));
     } catch (error) {
       console.error("Failed to delete document", error);
+    }
+  };
+
+  const handleDownload = async (doc: Document) => {
+    try {
+      const { blob, filename } = await documents.download(doc.id);
+      const url = URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error("Download failed", error);
+    }
+  };
+
+  const handleView = async (doc: Document) => {
+    try {
+      const { blob } = await documents.download(doc.id, true);
+      const url = URL.createObjectURL(blob);
+      const a = window.document.createElement('a');
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      window.document.body.appendChild(a);
+      a.click();
+      window.document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (error) {
+      console.error("View failed", error);
     }
   };
 
@@ -185,7 +216,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
               className="hidden" 
               ref={fileInputRef} 
               onChange={handleFileSelect}
-              accept=".pdf,.docx,.txt,.md,.pptx,.ppt"
+              accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.pptx"
             />
           </div>
 
@@ -211,7 +242,7 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
                      <div className="flex items-center gap-1">Size <ArrowUpDown className="h-3 w-3" /></div>
                   </th>
                   <th className="px-4 py-3 w-28">Status</th>
-                  <th className="px-4 py-3 w-16 text-right">Actions</th>
+                  <th className="px-4 py-3 w-28 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border bg-card">
@@ -257,15 +288,36 @@ export function DocumentManager({ isOpen, onClose }: DocumentManagerProps) {
                           {doc.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-right">
-                        <Button 
-                          variant="ghost" 
-                          size="icon" 
-                          className="h-8 w-8 text-muted-foreground hover:text-destructive opacity-100 sm:opacity-0 group-hover:opacity-100 transition-opacity"
-                          onClick={() => handleDelete(doc.id)}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-0.5">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            title="View"
+                            onClick={() => handleView(doc)}
+                          >
+                            <Eye className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                            title="Download"
+                            onClick={() => handleDownload(doc)}
+                          >
+                            <Download className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground hover:text-destructive"
+                            title="Delete"
+                            onClick={() => handleDelete(doc.id)}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </td>
                     </tr>
                   ))

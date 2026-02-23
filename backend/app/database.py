@@ -1,6 +1,7 @@
 """
 Database connection and session management.
 """
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 
@@ -60,4 +61,8 @@ async def init_db():
     import app.models.conversation  # noqa: F401
 
     async with engine.begin() as conn:
+        # Idempotent migration: add attachments column if it doesn't exist yet
+        await conn.execute(text(
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT NULL"
+        ))
         await conn.run_sync(Base.metadata.create_all)

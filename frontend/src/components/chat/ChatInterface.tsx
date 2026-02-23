@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
 import { WelcomeScreen } from "./WelcomeScreen";
-import type { ChatMessage } from "../../types";
+import type { ChatMessage, ChatAttachment } from "../../types";
 import { chat } from "../../api/chat";
 
 interface ChatInterfaceProps {
@@ -26,8 +26,8 @@ export function ChatInterface({ conversationId, onConversationCreated }: ChatInt
   const loadConversation = async (id: string) => {
     setIsLoading(true);
     try {
-      const data = await chat.getConversation(id);
-      setMessages(data.messages);
+      const messages = await chat.getConversationMessages(id);
+      setMessages(messages);
     } catch (error) {
       console.error("Failed to load conversation", error);
     } finally {
@@ -35,21 +35,39 @@ export function ChatInterface({ conversationId, onConversationCreated }: ChatInt
     }
   };
 
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, files?: File[]) => {
+    // Build attachments for local display
+    const attachments: ChatAttachment[] | undefined = files?.map(f => ({
+      id: crypto.randomUUID(),
+      file: f,
+      preview: f.type.startsWith('image/') ? URL.createObjectURL(f) : undefined,
+      type: f.type.startsWith('image/')
+        ? 'image' as const
+        : f.name.match(/\.(csv|xlsx)$/i)
+          ? 'spreadsheet' as const
+          : 'document' as const,
+    }));
+
     // Add user message immediately
-    const userMsg: ChatMessage = { role: 'user', content, timestamp: Date.now() };
+    const userMsg: ChatMessage = {
+      role: 'user',
+      content,
+      timestamp: Date.now(),
+      attachments,
+    };
     setMessages(prev => [...prev, userMsg]);
     setIsLoading(true);
 
     try {
-      const response = await chat.sendMessage({ 
+      const response = await chat.sendMessage({
         message: content,
-        conversation_id: conversationId || undefined
+        conversation_id: conversationId || undefined,
+        files,
       });
-      
-      const aiMsg: ChatMessage = { 
-        role: 'assistant', 
-        content: response.message, 
+
+      const aiMsg: ChatMessage = {
+        role: 'assistant',
+        content: response.message,
         timestamp: Date.now(),
         sources: response.sources
       };

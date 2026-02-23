@@ -5,6 +5,7 @@ Fully tenant-isolated: all queries and file operations are scoped to the user's 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,6 +15,8 @@ from app.models.user import User
 from app.models.document import Document, DocumentStatus, DocumentType
 from app.api.auth import get_current_user
 from app.middleware.file_storage import get_storage
+from app.vector_store.store import TenantVectorStore
+from app.vector_store.hybrid_search import HybridSearcher
 
 settings = get_settings()
 
@@ -29,6 +32,8 @@ MIME_TYPE_MAP = {
     "image/png": DocumentType.IMAGE,
     "image/jpeg": DocumentType.IMAGE,
     "image/tiff": DocumentType.IMAGE,
+    "text/csv": DocumentType.CSV,
+    "application/csv": DocumentType.CSV,
     "text/plain": DocumentType.OTHER,
 }
 
@@ -160,6 +165,49 @@ async def get_document(
     }
 
 
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: UUID,
+    inline: bool = False,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Serve the raw file for a document.
+    ?inline=false (default) → Content-Disposition: attachment  (browser download)
+    ?inline=true            → Content-Disposition: inline      (open in browser tab)
+    """
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == document_id)
+        .where(Document.tenant_id == current_user.tenant_id)
+    )
+    document = result.scalar_one_or_none()
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not document.file_path:
+        raise HTTPException(status_code=404, detail="File not available")
+
+    storage = get_storage()
+    try:
+        content = storage.read(current_user.tenant_id, document.file_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="File not found in storage")
+
+    if inline:
+        disposition = "inline"
+    else:
+        safe_name = document.original_filename.replace('"', '_')
+        disposition = f'attachment; filename="{safe_name}"'
+
+    return Response(
+        content=content,
+        media_type=document.mime_type or "application/octet-stream",
+        headers={"Content-Disposition": disposition},
+    )
+
+
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_document(
     document_id: UUID,
@@ -176,6 +224,14 @@ async def delete_document(
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    # Delete vectors from Qdrant
+    vector_store = TenantVectorStore()
+    vector_store.delete_document_vectors(str(current_user.tenant_id), str(document_id))
+
+    # Invalidate BM25 cache so stale chunks don't appear in hybrid search
+    hybrid_searcher = HybridSearcher(vector_store=vector_store)
+    hybrid_searcher.invalidate_cache(str(current_user.tenant_id))
 
     # Delete the file from storage backend
     if document.file_path:

@@ -18,7 +18,10 @@ class AgentState(TypedDict):
                 Uses `add_messages` reducer to append new messages.
     - tenant_id: Tenant scope for vector search isolation.
     - user_id: User who initiated the chat.
+    - reflection_count: Number of self-reflection retries (max 1).
     """
     messages: Annotated[list[BaseMessage], add_messages]
     tenant_id: str
     user_id: str
+    reflection_count: int
+    attachment_ids: list[str]
