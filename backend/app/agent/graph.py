@@ -10,14 +10,13 @@ Graph flow:
 """
 import logging
 
-from google import genai
 from google.genai import types
-from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from app.config import get_settings
+from app.ai_client import get_genai_client, get_langchain_llm
 from app.agent.state import AgentState
 from app.agent.tools import get_agent_tools
 
@@ -88,7 +87,7 @@ async def _decompose_query(state: AgentState) -> dict:
         return {"messages": []}
 
     try:
-        client = genai.Client(api_key=settings.google_api_key)
+        client = get_genai_client()
         response = client.models.generate_content(
             model="gemini-3-flash-preview",
             contents=f"""Analyze this query and determine if it requires multiple distinct steps to answer.
@@ -143,12 +142,7 @@ async def _call_model(state: AgentState) -> dict:
     tenant_id = state["tenant_id"]
     tools = get_agent_tools(tenant_id)
 
-    llm = ChatGoogleGenerativeAI(
-        model=settings.gemini_model,
-        google_api_key=settings.google_api_key,
-        temperature=0.3,
-        convert_system_message_to_human=True,
-    )
+    llm = get_langchain_llm(temperature=0.3, convert_system_message_to_human=True)
 
     llm_with_tools = llm.bind_tools(tools)
 
@@ -211,7 +205,7 @@ async def _reflect_on_answer(state: AgentState) -> dict:
         return {"messages": [], "reflection_count": state.get("reflection_count", 0)}
 
     try:
-        client = genai.Client(api_key=settings.google_api_key)
+        client = get_genai_client()
         response = client.models.generate_content(
             model="gemini-3-flash-preview",
             contents=f"""Evaluate if this answer adequately addresses the user's question.

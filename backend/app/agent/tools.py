@@ -19,6 +19,7 @@ from langchain_core.tools import tool
 from sqlalchemy import select
 
 from app.config import get_settings
+from app.ai_client import get_genai_client
 from app.document_processing.embeddings import EmbeddingGenerator
 from app.vector_store.store import TenantVectorStore
 from app.vector_store.hybrid_search import HybridSearcher
@@ -504,7 +505,6 @@ def create_summarize_document_tool(tenant_id: str):
         """
         logger.info(f"Tool summarize_document called: doc={document_id}, tenant={tenant_id}")
 
-        from google import genai
         from google.genai import types
 
         store = _get_vector_store()
@@ -553,7 +553,7 @@ def create_summarize_document_tool(tenant_id: str):
         if len(combined) > 30000:
             combined = combined[:30000] + "\n\n[Content truncated...]"
 
-        client = genai.Client(api_key=settings.google_api_key)
+        client = get_genai_client()
         response = client.models.generate_content(
             model=settings.gemini_model,
             contents=f"Provide a comprehensive summary of the following document content. "
@@ -590,7 +590,6 @@ def create_compare_documents_tool(tenant_id: str):
             f"aspect='{aspect}', tenant={tenant_id}"
         )
 
-        from google import genai
         from google.genai import types
         from qdrant_client.models import Filter, FieldCondition, MatchValue
 
@@ -635,7 +634,7 @@ def create_compare_documents_tool(tenant_id: str):
 
         aspect_str = f" Focus specifically on: {aspect}." if aspect else ""
 
-        client = genai.Client(api_key=settings.google_api_key)
+        client = get_genai_client()
         response = client.models.generate_content(
             model=settings.gemini_model,
             contents=f"Compare the following two documents. Identify key similarities and differences.{aspect_str}\n\n"

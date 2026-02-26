@@ -107,7 +107,7 @@ def _build_human_message(
 
     content_blocks = []
 
-    # Build text context from document/spreadsheet attachments
+    # Collect text context from all attachment types (images via Qwen VLM get text descriptions here)
     extra_context_parts = []
     for att in attachment_ctx.attachments:
         if att.category == "document" and att.extracted_text:
@@ -119,6 +119,12 @@ def _build_human_message(
                 f"\n--- Attached spreadsheet: {att.filename} (attachment_id: {att.attachment_id}) ---\n"
                 f"{att.spreadsheet_summary}"
             )
+        elif att.category == "image" and att.extracted_text:
+            # Qwen VLM processed: pass text description only — no raw image bytes to Gemini
+            extra_context_parts.append(
+                f"\n--- Attached image: {att.filename} ---\n"
+                f"[Visual content extracted by vision model]\n{att.extracted_text}"
+            )
 
     full_text = (text or "").strip()
     if extra_context_parts:
@@ -127,9 +133,9 @@ def _build_human_message(
     if full_text:
         content_blocks.append({"type": "text", "text": full_text})
 
-    # Add image data URLs
+    # Add raw image_url blocks (Gemini backend only — images not pre-processed by Qwen VLM)
     for att in attachment_ctx.attachments:
-        if att.category == "image" and att.image_data_url:
+        if att.category == "image" and not att.extracted_text and att.image_data_url:
             content_blocks.append({
                 "type": "image_url",
                 "image_url": {"url": att.image_data_url},

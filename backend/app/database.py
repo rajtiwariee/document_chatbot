@@ -65,4 +65,9 @@ async def init_db():
         await conn.execute(text(
             "ALTER TABLE messages ADD COLUMN IF NOT EXISTS attachments JSONB DEFAULT NULL"
         ))
+        # Idempotent migration: add CSV to documenttype enum if missing
+        # (CREATE_ALL does not ALTER existing PG enum types)
+        await conn.execute(text(
+            "ALTER TYPE documenttype ADD VALUE IF NOT EXISTS 'CSV'"
+        ))
         await conn.run_sync(Base.metadata.create_all)

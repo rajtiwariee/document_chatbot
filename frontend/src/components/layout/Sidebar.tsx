@@ -1,7 +1,7 @@
 import { Plus, MessageSquare, Trash2, FolderOpen, LogOut } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "../ui/Button";
-import { cn } from "../../lib/utils";
+import { cn, getRelativeTime, groupConversationsByTime } from "../../lib/utils";
 import { chat } from "../../api/chat";
 import type { ConversationSummary } from "../../types";
 import { DocumentManager } from "../documents/DocumentManager";
@@ -88,22 +88,32 @@ export function Sidebar({
               ) : conversations.length === 0 ? (
                  <div className="px-2 text-sm text-muted-foreground">No recent chats</div>
               ) : (
-                conversations.map((conv) => (
-                  <div key={conv.id} className="group relative">
-                    <Button
-                      variant={currentConversationId === conv.id ? "secondary" : "ghost"}
-                      className="w-full justify-start text-left font-normal truncate pr-8"
-                      onClick={() => onSelectConversation(conv.id)}
-                    >
-                      <MessageSquare className="mr-2 h-4 w-4 opacity-70" />
-                      <div className="truncate">{conv.title || "Untitled Chat"}</div>
-                    </Button>
-                    <button
-                      onClick={(e) => handleDelete(e, conv.id)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100 transition-opacity"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                groupConversationsByTime(conversations).map(({ label, items }) => (
+                  <div key={label}>
+                    <div className="px-2 py-1 mt-3 first:mt-0 text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                      {label}
+                    </div>
+                    {items.map((conv) => (
+                      <div key={conv.id} className="group relative">
+                        <Button
+                          variant={currentConversationId === conv.id ? "secondary" : "ghost"}
+                          className="w-full justify-start text-left font-normal pr-8"
+                          onClick={() => onSelectConversation(conv.id)}
+                        >
+                          <MessageSquare className="mr-2 h-4 w-4 shrink-0 opacity-70" />
+                          <div className="flex-1 min-w-0">
+                            <div className="truncate text-sm">{conv.title || "Untitled Chat"}</div>
+                            <div className="text-xs text-muted-foreground">{getRelativeTime(conv.updated_at)}</div>
+                          </div>
+                        </Button>
+                        <button
+                          onClick={(e) => handleDelete(e, conv.id)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground opacity-0 hover:text-destructive group-hover:opacity-100 transition-opacity"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
                   </div>
                 ))
               )}

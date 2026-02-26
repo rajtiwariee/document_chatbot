@@ -2,6 +2,7 @@
 FastAPI application entry point.
 """
 import asyncio
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket
@@ -19,11 +20,21 @@ settings = get_settings()
 # This ensures all startup logs (including DB init) are captured.
 setup_logging()
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
+    if settings.use_vertex_ai:
+        logger.info(
+            "AI backend: Vertex AI (project=%s, location=%s)",
+            settings.google_cloud_project,
+            settings.google_cloud_location,
+        )
+    else:
+        logger.info("AI backend: Google Generative AI (API key)")
     await init_db()
     yield
     # Shutdown

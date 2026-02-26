@@ -147,6 +147,23 @@ async def process_attachments(files: list[UploadFile]) -> AttachmentContext:
                     f"raw_size={len(content)}bytes, data_url_len={len(attachment.image_data_url)}"
                 )
 
+                from app.config import get_settings as _get_settings
+                from app.vision.base import get_vision_backend
+                _settings = _get_settings()
+                if _settings.vision_backend.lower() == "qwen_vl":
+                    try:
+                        vision = get_vision_backend()
+                        caption = await vision.caption_image(temp_path)
+                        attachment.extracted_text = caption
+                        logger.info(
+                            f"Qwen-VL captioned chat attachment: {filename} ({len(caption)} chars)"
+                        )
+                    except Exception as e:
+                        logger.error(f"Qwen-VL captioning failed for {filename}: {e}")
+                        attachment.extracted_text = (
+                            f"[Image: {filename} — could not extract description: {e}]"
+                        )
+
             elif category == "document":
                 extractor = DocumentExtractor()
                 ext = os.path.splitext(filename)[1].lower().lstrip(".")

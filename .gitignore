@@ -7,6 +7,7 @@ docs/*
 venv/
 .venv/
 env/
+Architecture.md 
 .env
 task.todo
 # IDE

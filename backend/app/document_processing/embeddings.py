@@ -6,11 +6,9 @@ Batches large requests to stay within API limits.
 """
 import logging
 import time
-from typing import Optional
-
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 from app.config import get_settings
+from app.ai_client import get_langchain_embeddings
 from app.document_processing.chunker import Chunk
 
 settings = get_settings()
@@ -27,15 +25,8 @@ class EmbeddingGenerator:
     Vector dimensions are configured via settings.embedding_dimensions.
     """
 
-    def __init__(self, api_key: Optional[str] = None):
-        model_name = settings.embedding_model
-        if not model_name.startswith("models/"):
-            model_name = f"models/{model_name}"
-
-        self.embeddings = GoogleGenerativeAIEmbeddings(
-            model=model_name,
-            google_api_key=api_key or settings.google_api_key,
-        )
+    def __init__(self):
+        self.embeddings = get_langchain_embeddings()
 
     def embed_text(self, text: str) -> list[float]:
         """Generate embedding for a single text string."""

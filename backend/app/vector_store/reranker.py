@@ -7,10 +7,10 @@ the query, and returns the top results by relevance.
 import json
 import logging
 
-from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.ai_client import get_genai_client
 from app.vector_store.store import SearchResult
 
 settings = get_settings()
@@ -32,7 +32,7 @@ class GeminiReranker:
 
     def __init__(self, top_n: int = 5):
         self.top_n = top_n
-        self.client = genai.Client(api_key=settings.google_api_key)
+        self.client = get_genai_client()
 
     def rerank(self, query: str, results: list[SearchResult]) -> list[SearchResult]:
         """

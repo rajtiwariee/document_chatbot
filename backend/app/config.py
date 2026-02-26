@@ -35,6 +35,15 @@ class Settings(BaseSettings):
     embedding_dimensions: int = 3072  # gemini-embedding-001
     enable_reranking: bool = True
 
+    # Vertex AI (for GCP VM with Application Default Credentials)
+    google_genai_use_vertex: bool = False
+    google_cloud_project: str = ""
+    google_cloud_location: str = "us-central1"
+
+    @property
+    def use_vertex_ai(self) -> bool:
+        return self.google_genai_use_vertex and bool(self.google_cloud_project)
+
     # Vision Backend (for multimodal RAG image captioning & VQA)
     vision_backend: str = os.getenv("VISION_BACKEND", "gemini")  # "gemini" or "qwen_vl"
     vision_model: str = os.getenv("VISION_MODEL", "gemini-3-flash-preview")  # Gemini model or "qwen3-vl-8b"

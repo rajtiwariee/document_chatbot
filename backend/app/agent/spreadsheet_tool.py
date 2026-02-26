@@ -10,10 +10,10 @@ import logging
 
 import numpy as np
 import pandas as pd
-from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.ai_client import get_genai_client
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -118,7 +118,7 @@ def execute_query(df: pd.DataFrame, question: str) -> str:
 
     # Generate pandas code via Gemini
     try:
-        client = genai.Client(api_key=settings.google_api_key)
+        client = get_genai_client()
         response = client.models.generate_content(
             model="gemini-3-flash-preview",
             contents=CODE_GEN_PROMPT.format(schema=schema, question=question),

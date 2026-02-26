@@ -9,10 +9,10 @@ import logging
 import mimetypes
 from pathlib import Path
 
-from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.ai_client import get_genai_client
 from app.vision.base import VisionBackend
 
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class GeminiVision(VisionBackend):
 
     def __init__(self):
         settings = get_settings()
-        self.client = genai.Client(api_key=settings.google_api_key)
+        self.client = get_genai_client()
         self.model = settings.vision_model
         logger.info("GeminiVision initialized (model: %s)", self.model)
 
