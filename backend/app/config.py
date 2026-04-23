@@ -61,6 +61,17 @@ class Settings(BaseSettings):
     chat_attachment_max_count: int = 3
     storage_backend: str = "local"    # "local" or "gcs"
     gcs_bucket_name: str = ""
+
+    # Vertex AI Vector Search (for production)
+    vertex_vector_index_id: str = os.getenv("VERTEX_VECTOR_INDEX_ID", "")
+    vertex_vector_endpoint_id: str = os.getenv("VERTEX_VECTOR_ENDPOINT_ID", "")
+    vertex_vector_location: str = os.getenv("VERTEX_VECTOR_LOCATION", "us-central1")
+
+    @property
+    def use_vertex_vector_search(self) -> bool:
+        """Check if Vertex AI Vector Search should be used instead of Qdrant."""
+        return bool(self.vertex_vector_index_id) and bool(self.vertex_vector_endpoint_id)
+    
     
     class Config:
         env_file = [".env", "../.env"]

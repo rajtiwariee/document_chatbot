@@ -9,6 +9,7 @@ sent as base64 data URLs in the message content array.
 import base64
 import logging
 import mimetypes
+import re
 from pathlib import Path
 
 import httpx
@@ -28,7 +29,9 @@ Include all of the following that apply:
 - Any context that would help someone find this image via text search
 - If any tables are visible, reproduce them as markdown pipe-delimited tables (| col1 | col2 |) with exact values
 
-Be thorough and factual. Do not speculate beyond what is visible."""
+Be thorough and factual. Do not speculate beyond what is visible.
+
+CRITICAL: Do not include ANY internal monologue, chain of thought, <thinking>, or <reasoning> XML tags in your response. Output ONLY the final requested content."""
 
 
 class QwenVLVision(VisionBackend):
@@ -93,6 +96,13 @@ class QwenVLVision(VisionBackend):
 
         data = response.json()
         content = data["choices"][0]["message"]["content"].strip()
+        
+        # Fallback mechanism: Strip out <thinking> or <reasoning> tags and their contents
+        # if the deeper thinking models disobey our strict prompt engineering.
+        content = re.sub(r"<thinking>.*?</thinking>", "", content, flags=re.DOTALL)
+        content = re.sub(r"<reasoning>.*?</reasoning>", "", content, flags=re.DOTALL)
+        content = content.strip()
+
         finish_reason = data["choices"][0].get("finish_reason")
         return content, finish_reason
 
@@ -102,6 +112,10 @@ class QwenVLVision(VisionBackend):
 
         data_url = self._image_to_data_url(image_path)
         messages = [
+            {
+                "role": "system",
+                "content": "You are a direct data extraction API. You strictly output factual descriptions and never include conversational filler, internal reasoning, or chain-of-thought XML tags."
+            },
             {
                 "role": "user",
                 "content": [
@@ -131,10 +145,17 @@ class QwenVLVision(VisionBackend):
             "- Preserve all numbers, text, and formatting precisely\n"
             "- If cells are merged, repeat the value in each cell\n"
             "- If no table is found, respond with exactly: NO_TABLE_FOUND\n\n"
-            "Output only the markdown table, nothing else."
+            "CRITICAL FORMATTING RULE: Output EXACTLY and ONLY the markdown table. "
+            "No preambles, no postscripts, no conversational text. "
+            "Do NOT include ANY internal monologue, chain of thought, <thinking>, or <reasoning> XML tags in your response. "
+            "Output ONLY the final table data."
         )
 
         messages = [
+            {
+                "role": "system",
+                "content": "You are a direct data extraction API. You strictly output Markdown tables and never include conversational filler, internal reasoning, or chain-of-thought XML tags."
+            },
             {
                 "role": "user",
                 "content": [
@@ -200,11 +221,17 @@ class QwenVLVision(VisionBackend):
             "- Do NOT summarize, abbreviate, or skip repetitive rows. Every row matters.\n"
             "- Do NOT say 'continued' or '...' — output the actual content.\n"
             "- Reproduce all numbers, dates, and values exactly as shown.\n"
-            "- If a table has many rows (10, 20, 50+), you MUST include ALL of them.\n\n"
+            "- If a table has many rows (10, 20, 50+), you MUST include ALL of them.\n"
+            "- CRITICAL: Do NOT include ANY internal monologue, chain of thought, <thinking>, or <reasoning> XML tags in your response. "
+            "Output ONLY the final markdown text representing the document content.\n\n"
             "Begin extraction now."
         )
 
         messages = [
+            {
+                "role": "system",
+                "content": "You are a direct data extraction API. You strictly output clean Markdown and never include conversational filler, internal reasoning, or chain-of-thought XML tags."
+            },
             {
                 "role": "user",
                 "content": [
@@ -244,10 +271,15 @@ class QwenVLVision(VisionBackend):
         prompt = (
             "Classify this image into exactly ONE of these categories:\n"
             "table, chart, diagram, photo, screenshot, document, other\n\n"
-            "Respond with a single word only."
+            "CRITICAL: Respond with a single word only. Do NOT include ANY internal monologue, "
+            "chain of thought, <thinking>, or <reasoning> XML tags in your response."
         )
 
         messages = [
+            {
+                "role": "system",
+                "content": "You are a direct classification classifier API. You strictly output semantic classifications and never include conversational filler, internal reasoning, or chain-of-thought XML tags."
+            },
             {
                 "role": "user",
                 "content": [
@@ -274,10 +306,16 @@ class QwenVLVision(VisionBackend):
         prompt = (
             f"Look at this image and answer the following question accurately.\n\n"
             f"Question: {question}\n\n"
-            f"Answer based only on what is visible in the image."
+            f"Answer based only on what is visible in the image. "
+            f"CRITICAL: Do NOT include ANY internal monologue, chain of thought, "
+            f"<thinking>, or <reasoning> XML tags in your response. Output ONLY the final analytical answer."
         )
 
         messages = [
+            {
+                "role": "system",
+                "content": "You are a direct visual Q&A API. You strictly output factual answers without conversational filler, internal reasoning, or chain-of-thought XML tags."
+            },
             {
                 "role": "user",
                 "content": [

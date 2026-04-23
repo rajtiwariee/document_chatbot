@@ -315,9 +315,59 @@ async def _handle_chat(
 
     attachment_ctx = None
     try:
-        # Process attachments
+        # Process attachments for immediate LLM context
         if files:
             attachment_ctx = await process_attachments(files)
+            
+            # --- START NEW BACKGROUND INDEXING LOGIC (Option A) ---
+            # Automatically push document/spreadsheet attachments to the formal 
+            # Knowledge Base vector pipeline so they are remembered in the future.
+            
+            try:
+                from app.api.documents import MIME_TYPE_MAP
+                from app.models.document import Document, DocumentStatus, DocumentType
+                
+                # We need to seek backend-stored files or reuse the temp files. 
+                # Since we already saved them to `ctx.temp_dir`, we can read from there.
+                storage = get_storage()
+                for att in attachment_ctx.attachments:
+                    # Only index dense documents/spreadsheets in Vector DB, ignore standalone tiny images
+                    if att.category in ["document", "spreadsheet"]:
+                        temp_path = os.path.join(attachment_ctx.temp_dir, f"{att.attachment_id}_{att.filename}")
+                        with open(temp_path, "rb") as f:
+                            raw_bytes = f.read()
+                        
+                        # Save to permanent storage engine (GCS/Local)
+                        stored_path = storage.save(current_user.tenant_id, att.filename, raw_bytes)
+                        doc_type = MIME_TYPE_MAP.get(att.mime_type, DocumentType.OTHER)
+                        
+                        # Create formal Database record
+                        document = Document(
+                            filename=att.filename,
+                            original_filename=att.filename,
+                            file_path=stored_path,
+                            file_size=len(raw_bytes),
+                            mime_type=att.mime_type,
+                            document_type=doc_type,
+                            status=DocumentStatus.PENDING,
+                            tenant_id=current_user.tenant_id,
+                            owner_id=current_user.id,
+                        )
+                        db.add(document)
+                        await db.flush()
+                        
+                        # Queue in Celery background worker
+                        try:
+                            from app.celery_app import celery_app
+                            from app.worker import process_document
+                            process_document.delay(str(document.id))
+                            logger.info(f"Queued chat attachment {att.filename} for permanent Vector DB storage.")
+                        except Exception as ce:
+                            logger.error(f"Failed to queue chat attachment for Celery: {ce}")
+                            
+            except Exception as e:
+                logger.error(f"Failed to push chat attachments to Knowledge Base pipeline: {e}")
+            # --- END NEW BACKGROUND INDEXING LOGIC ---
 
         # Get or create conversation
         conversation, history_messages = await _get_or_create_conversation(
@@ -365,6 +415,7 @@ async def _handle_chat(
             sequence=msg_count + 1,
         )
         db.add(assistant_msg)
+        await db.commit()
 
         return ChatResponse(
             message=response_text,
@@ -393,6 +444,47 @@ async def _handle_chat_stream(
     attachment_ctx = None
     if files:
         attachment_ctx = await process_attachments(files)
+        
+        # --- START NEW BACKGROUND INDEXING LOGIC (Option A) ---
+        try:
+            from app.api.documents import MIME_TYPE_MAP
+            from app.models.document import Document, DocumentStatus, DocumentType
+            
+            storage = get_storage()
+            for att in attachment_ctx.attachments:
+                if att.category in ["document", "spreadsheet"]:
+                    temp_path = os.path.join(attachment_ctx.temp_dir, f"{att.attachment_id}_{att.filename}")
+                    with open(temp_path, "rb") as f:
+                        raw_bytes = f.read()
+                    
+                    stored_path = storage.save(current_user.tenant_id, att.filename, raw_bytes)
+                    doc_type = MIME_TYPE_MAP.get(att.mime_type, DocumentType.OTHER)
+                    
+                    document = Document(
+                        filename=att.filename,
+                        original_filename=att.filename,
+                        file_path=stored_path,
+                        file_size=len(raw_bytes),
+                        mime_type=att.mime_type,
+                        document_type=doc_type,
+                        status=DocumentStatus.PENDING,
+                        tenant_id=current_user.tenant_id,
+                        owner_id=current_user.id,
+                    )
+                    db.add(document)
+                    await db.flush()
+                    
+                    try:
+                        from app.celery_app import celery_app
+                        from app.worker import process_document
+                        process_document.delay(str(document.id))
+                        logger.info(f"[stream] Queued chat attachment {att.filename} for permanent Vector DB storage.")
+                    except Exception as ce:
+                        logger.error(f"[stream] Failed to queue chat attachment for Celery: {ce}")
+                        
+        except Exception as e:
+            logger.error(f"[stream] Failed to push chat attachments to Knowledge Base pipeline: {e}")
+        # --- END NEW BACKGROUND INDEXING LOGIC ---
 
     conversation, history_messages = await _get_or_create_conversation(
         db, current_user, conversation_id, message,
@@ -457,6 +549,7 @@ async def _handle_chat_stream(
                         sequence=msg_count + 1,
                     )
                     db.add(assistant_msg)
+                await db.commit()
         finally:
             if attachment_ctx:
                 attachment_ctx.cleanup()
